@@ -30,6 +30,10 @@ import warnings
 import wave
 import struct 
 
+from jarvis.core.config import load_for_paths
+from jarvis.core.paths import JarvisPaths, first_existing
+from jarvis.core.state import BotStates
+
 # Suppress harmless library warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
 
@@ -50,25 +54,26 @@ from duckduckgo_search import DDGS
 # 1. CONFIGURATION & CONSTANTS
 # =========================================================================
 
-CONFIG_FILE = "config.json"
-MEMORY_FILE = "memory.json"
-BMO_IMAGE_FILE = "current_image.jpg"
-WAKE_WORD_MODEL = "./wakeword.onnx"
+PROJECT_PATHS = JarvisPaths.from_repository_root(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_FILE = str(PROJECT_PATHS.active_config_file)
+MEMORY_FILE = str(PROJECT_PATHS.memory_file)
+LEGACY_MEMORY_FILE = str(PROJECT_PATHS.repository_root / "memory.json")
+BMO_IMAGE_FILE = str(PROJECT_PATHS.camera_image_file)
+INPUT_AUDIO_FILE = str(PROJECT_PATHS.input_audio_file)
+WAKE_WORD_MODEL = str(PROJECT_PATHS.wakeword_model)
+WHISPER_EXECUTABLE = str(
+    first_existing(PROJECT_PATHS.whisper_executable_candidates)
+    or PROJECT_PATHS.whisper_executable_candidates[0 if os.name == "nt" else 1]
+)
+WHISPER_MODEL = str(PROJECT_PATHS.whisper_model)
+PIPER_EXECUTABLE = str(
+    first_existing(PROJECT_PATHS.piper_executable_candidates)
+    or PROJECT_PATHS.piper_executable_candidates[0 if os.name == "nt" else 1]
+)
 WAKE_WORD_THRESHOLD = 0.5
 
 # HARDWARE SETTINGS
 INPUT_DEVICE_NAME = None
-
-DEFAULT_CONFIG = {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "chat_memory": True,
-    "camera_rotation": 0,
-    "system_prompt_extras": "",
-    "input_device": None,
-    "input_sample_rate": None
-}
 
 # LLM SETTINGS
 OLLAMA_OPTIONS = {
@@ -80,17 +85,15 @@ OLLAMA_OPTIONS = {
 }
 
 def load_config():
-    config = DEFAULT_CONFIG.copy()
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                user_config = json.load(f)
-                config.update(user_config)
-        except Exception as e:
-            print(f"Config Error: {e}. Using defaults.")
-    return config
+    """Load the validated Phase 1 configuration in the legacy mapping shape."""
+    result = load_for_paths(PROJECT_PATHS)
+    for migration in result.migrations:
+        print(f"[CONFIG] {migration}", flush=True)
+    return result
 
-CURRENT_CONFIG = load_config()
+CONFIG_RESULT = load_config()
+APP_CONFIG = CONFIG_RESULT.config
+CURRENT_CONFIG = APP_CONFIG.as_legacy_dict()
 TEXT_MODEL = CURRENT_CONFIG["text_model"]
 VISION_MODEL = CURRENT_CONFIG["vision_model"]
 
@@ -156,15 +159,6 @@ def choose_input_samplerate(device, preferred=None):
 
     return int(candidates[0]) if candidates else 44100
 
-class BotStates:
-    IDLE = "idle"             
-    LISTENING = "listening"   
-    THINKING = "thinking"     
-    SPEAKING = "speaking"     
-    ERROR = "error"           
-    CAPTURING = "capturing" 
-    WARMUP = "warmup"       
-
 # --- SYSTEM PROMPT ---
 BASE_SYSTEM_PROMPT = """You are a helpful robot assistant running on a Raspberry Pi.
 Personality: Cute, helpful, robot.
@@ -191,13 +185,13 @@ You: {"action": "capture_image", "value": "environment"}
 ### END EXAMPLES ###
 """
 
-SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + "\n\n" + CURRENT_CONFIG.get("system_prompt_extras", "")
+SYSTEM_PROMPT = APP_CONFIG.effective_system_prompt(BASE_SYSTEM_PROMPT)
 
 # Sound Directories
-greeting_sounds_dir = "sounds/greeting_sounds"
-ack_sounds_dir = "sounds/ack_sounds"
-thinking_sounds_dir = "sounds/thinking_sounds"
-error_sounds_dir = "sounds/error_sounds"
+greeting_sounds_dir = str(PROJECT_PATHS.sounds_dir / "greeting_sounds")
+ack_sounds_dir = str(PROJECT_PATHS.sounds_dir / "ack_sounds")
+thinking_sounds_dir = str(PROJECT_PATHS.sounds_dir / "thinking_sounds")
+error_sounds_dir = str(PROJECT_PATHS.sounds_dir / "error_sounds")
 
 # =========================================================================
 # 2. GUI CLASS
@@ -362,7 +356,7 @@ class BotGUI:
             self.set_state(BotStates.IDLE, "Interrupted.")
 
     def load_animations(self):
-        base_path = "faces"
+        base_path = str(PROJECT_PATHS.faces_dir)
         states = ["idle", "listening", "thinking", "speaking", "error", "capturing", "warmup"] 
         for state in states:
             folder = os.path.join(base_path, state)
@@ -691,7 +685,7 @@ class BotGUI:
                                 return # Success
 
 
-    def record_voice_adaptive(self, filename="input.wav"):
+    def record_voice_adaptive(self, filename=INPUT_AUDIO_FILE):
         print("Recording (Adaptive)...", flush=True)
         time.sleep(0.5) 
         samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
@@ -735,7 +729,7 @@ class BotGUI:
         
         return self.save_audio_buffer(buffer, filename, samplerate)
 
-    def record_voice_ptt(self, filename="input.wav"):
+    def record_voice_ptt(self, filename=INPUT_AUDIO_FILE):
         print("Recording (PTT)...", flush=True)
         time.sleep(0.5)
         samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
@@ -760,6 +754,7 @@ class BotGUI:
 
     def save_audio_buffer(self, buffer, filename, samplerate=16000):
         if not buffer: return None
+        PROJECT_PATHS.ensure_runtime_directories()
         audio_data = np.concatenate(buffer, axis=0).flatten()
         audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
         audio_data = (audio_data * 32767).astype(np.int16)
@@ -775,7 +770,7 @@ class BotGUI:
         print("Transcribing...", flush=True)
         try:
             result = subprocess.run(
-                ["./whisper.cpp/build/bin/whisper-cli", "-m", "./whisper.cpp/models/ggml-base.en.bin", "-l", "en", "-t", "4", "-f", filename],
+                [WHISPER_EXECUTABLE, "-m", WHISPER_MODEL, "-l", "en", "-t", "4", "-f", filename],
                 capture_output=True, text=True
             )
             transcription_lines = result.stdout.strip().split('\n')
@@ -793,6 +788,7 @@ class BotGUI:
     def capture_image(self):
         self.set_state(BotStates.CAPTURING, "Watching...")
         try:
+            PROJECT_PATHS.ensure_runtime_directories()
             subprocess.run(["rpicam-still", "-t", "500", "-n", "--width", "640", "--height", "480", "-o", BMO_IMAGE_FILE], check=True)
             rotation = CURRENT_CONFIG.get("camera_rotation", 0)
             if rotation != 0:
@@ -826,7 +822,10 @@ class BotGUI:
             messages = [{"role": "user", "content": text, "images": [img_path]}]
         else:
             user_msg = {"role": "user", "content": text}
-            messages = self.permanent_memory + self.session_memory + [user_msg]
+            if APP_CONFIG.chat_memory:
+                messages = self.permanent_memory + self.session_memory + [user_msg]
+            else:
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}, user_msg]
         
         self.thinking_sound_active.set()
         threading.Thread(target=self._run_thinking_sound_loop, daemon=True).start()
@@ -877,7 +876,8 @@ class BotGUI:
                         self.append_to_text("BOT: ", newline=False)
                         self.append_to_text(chat_text, newline=True)
                         with self.tts_queue_lock: self.tts_queue.append(chat_text)
-                        self.session_memory.append({"role": "assistant", "content": chat_text})
+                        if APP_CONFIG.chat_memory:
+                            self.session_memory.append({"role": "assistant", "content": chat_text})
                         self.wait_for_tts()
                         self.set_state(BotStates.IDLE, "Ready")
                         return
@@ -930,10 +930,12 @@ class BotGUI:
                         self.append_to_text("BOT: ", newline=False)
                         self.append_to_text(final_text, newline=True)
                         with self.tts_queue_lock: self.tts_queue.append(final_text)
-                        self.session_memory.append({"role": "assistant", "content": final_text})
+                        if APP_CONFIG.chat_memory:
+                            self.session_memory.append({"role": "assistant", "content": final_text})
             else:
                 self.append_to_text("")
-                self.session_memory.append({"role": "assistant", "content": full_response_buffer}) 
+                if APP_CONFIG.chat_memory:
+                    self.session_memory.append({"role": "assistant", "content": full_response_buffer})
             
             self.wait_for_tts()
             self.set_state(BotStates.IDLE, "Ready")
@@ -964,11 +966,13 @@ class BotGUI:
         if not clean.strip(): return
         
         print(f"[PIPER SPEAKING] '{clean}'", flush=True)
-        voice_model = CURRENT_CONFIG.get("voice_model", "piper/en_GB-semaine-medium.onnx")
+        voice_model = str(PROJECT_PATHS.resolve_from_root(
+            CURRENT_CONFIG.get("voice_model", "piper/en_GB-semaine-medium.onnx")
+        ))
         
         try:
             self.current_audio_process = subprocess.Popen(
-                ["./piper/piper", "--model", voice_model, "--output-raw"], 
+                [PIPER_EXECUTABLE, "--model", voice_model, "--output-raw"],
                 stdin=subprocess.PIPE, 
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL
@@ -1061,16 +1065,22 @@ class BotGUI:
         except: pass
 
     def load_chat_history(self):
-        if os.path.exists(MEMORY_FILE):
+        if not APP_CONFIG.chat_memory:
+            return [{"role": "system", "content": SYSTEM_PROMPT}]
+        memory_source = MEMORY_FILE if os.path.exists(MEMORY_FILE) else LEGACY_MEMORY_FILE
+        if os.path.exists(memory_source):
             try:
-                with open(MEMORY_FILE, "r") as f: return json.load(f)
+                with open(memory_source, "r") as f: return json.load(f)
             except: pass
         return [{"role": "system", "content": SYSTEM_PROMPT}]
 
     def save_chat_history(self):
+        if not APP_CONFIG.chat_memory:
+            return
         full = self.permanent_memory + self.session_memory
         conv = full[1:]
         if len(conv) > 10: conv = conv[-10:]
+        PROJECT_PATHS.ensure_runtime_directories()
         with open(MEMORY_FILE, "w") as f: 
             json.dump([full[0]] + conv, f, indent=4)
 

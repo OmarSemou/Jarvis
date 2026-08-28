@@ -1,0 +1,11 @@
+{
+  "text_model": "gemma3:1b",
+  "vision_model": "moondream",
+  "voice_model": "piper/en_GB-semaine-medium.onnx",
+  "chat_memory": false,
+  "camera_rotation": 0,
+  "system_prompt": "You are Jarvis, a helpful local personal companion. Keep responses concise and friendly.",
+  "system_prompt_extras": "",
+  "input_device": null,
+  "input_sample_rate": null
+}
