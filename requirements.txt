@@ -1,4 +1,4 @@
-# Phase 2A local text runtime. The official Ollama client is always constructed
+# Phase 2B local text/tool runtime. The official Ollama client is always constructed
 # with an explicit loopback endpoint and bounded httpx timeouts.
 httpx>=0.27,<1
 ollama>=0.6.2,<0.7

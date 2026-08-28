@@ -53,6 +53,7 @@ KNOWN_KEYS = frozenset(
         "llm_model",
         "llm_thinking",
         "conversation_max_turns",
+        "conversation_max_tool_rounds",
         "ollama_host",
         "ollama_connect_timeout_seconds",
         "ollama_read_timeout_seconds",
@@ -77,6 +78,7 @@ class JarvisConfig:
     llm_model: str = "qwen3:8b"
     llm_thinking: bool = False
     conversation_max_turns: int = 12
+    conversation_max_tool_rounds: int = 3
     ollama_host: str = "http://127.0.0.1:11434"
     ollama_connect_timeout_seconds: float = 3.0
     ollama_read_timeout_seconds: float = 120.0
@@ -105,6 +107,7 @@ class JarvisConfig:
             "llm_model": self.llm_model,
             "llm_thinking": self.llm_thinking,
             "conversation_max_turns": self.conversation_max_turns,
+            "conversation_max_tool_rounds": self.conversation_max_tool_rounds,
             "ollama_host": self.ollama_host,
             "ollama_connect_timeout_seconds": self.ollama_connect_timeout_seconds,
             "ollama_read_timeout_seconds": self.ollama_read_timeout_seconds,
@@ -221,6 +224,10 @@ def parse_config(
     if not _is_int(conversation_max_turns) or not 1 <= conversation_max_turns <= 100:
         problems.append("'conversation_max_turns' must be an integer from 1 to 100")
 
+    conversation_max_tool_rounds = merged["conversation_max_tool_rounds"]
+    if not _is_int(conversation_max_tool_rounds) or not 1 <= conversation_max_tool_rounds <= 10:
+        problems.append("'conversation_max_tool_rounds' must be an integer from 1 to 10")
+
     ollama_host = _validate_string(merged, "ollama_host", problems)
 
     ollama_connect_timeout_seconds = merged["ollama_connect_timeout_seconds"]
@@ -249,6 +256,7 @@ def parse_config(
         llm_model=llm_model,
         llm_thinking=llm_thinking,
         conversation_max_turns=conversation_max_turns,
+        conversation_max_tool_rounds=conversation_max_tool_rounds,
         ollama_host=ollama_host,
         ollama_connect_timeout_seconds=float(ollama_connect_timeout_seconds),
         ollama_read_timeout_seconds=float(ollama_read_timeout_seconds),

@@ -31,11 +31,23 @@ def test_prompt_separates_policy_personality_and_customization():
     assert "untrusted preference input" in prompt
 
 
-def test_prompt_denies_unimplemented_physical_capabilities():
+def test_prompt_limits_actions_to_structured_simulation_tools():
     prompt = build_system_prompt()
     normalized = " ".join(prompt.split())
 
-    assert "no robot controls" in prompt
-    assert "Never claim that a physical action" in prompt
-    assert "do not pivot into a generic offer" in normalized
-    assert "Future physical capabilities are plans" in normalized
+    assert "safe simulated robot" in normalized
+    assert "no physical robot" in normalized
+    assert "Use only native structured tool calls" in normalized
+    assert "Never print pseudo tool syntax" in normalized
+    assert "never available through conversation tools" in normalized
+    assert "do not append a question or an offer of help" in normalized
+    assert "do not offer to reset or bypass safety" in normalized
+    assert "whether anything else is needed" in normalized
+
+
+def test_personality_avoids_canned_greetings_and_tool_narration():
+    rendered = DEFAULT_JARVIS_PROFILE.render()
+
+    assert "natural short greeting" in rendered
+    assert "not a canned assistant introduction" in rendered
+    assert "without narrating tool mechanics" in rendered

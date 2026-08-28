@@ -9,7 +9,7 @@ emergency stop, update sensor state, issue transport packets, or bypass policy.
 All physical action must pass deterministic validation and the safety
 supervisor before reaching a controller.
 
-## Phase 1 logical guarantees
+## Current logical guarantees
 
 - `stop` and `stop_following` are always permitted.
 - An emergency stop is latched once triggered.
@@ -26,6 +26,27 @@ supervisor before reaching a controller.
 Phase 1 contracts do not move hardware and do not implement serial or ESP32
 communication.
 
+## Phase 2B simulation policy
+
+Phase 2B exposes only an explicit allowlist of high-level actions. Model output
+cannot name arbitrary methods or supply actuator parameters. Registry
+validation, batch policy, the safety supervisor, and the controller remain
+deterministic and independent of the model.
+
+The simulator starts with explicit synthetic clear/fresh/ready inputs so tools
+can be exercised on a desktop. These are simulation facts, not sensor readings.
+An e-stop blocks base and expressive motion, including wave, nod, head motion,
+and pointing. `stop`, `stop_following`, and screen-only expression changes do
+not create physical motion and remain permitted by the existing policy.
+
+`/robot estop-reset` is a trusted local developer command. No reset, sensor
+update, heartbeat change, obstacle override, or safety-disable tool is exposed
+to the model. Resetting conversation history never resets the safety latch.
+
+Simulation verifies software control flow only. It does not validate physical
+stopping behavior, electrical isolation, motor drivers, sensor placement,
+watchdogs, communication loss, or emergency-stop circuitry.
+
 ## Future physical implementation
 
 The host safety supervisor is only one layer. The ESP32 must independently
@@ -37,4 +58,3 @@ A physical emergency-stop circuit must disable motor enable/power directly. It
 must not depend on the LLM, desktop, Raspberry Pi, Wi-Fi, application process,
 or ESP32 firmware successfully processing a command. Reset must be deliberate,
 local, and must not automatically resume prior motion.
-

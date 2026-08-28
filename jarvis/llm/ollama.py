@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
@@ -13,6 +14,7 @@ from ollama import Client, ResponseError
 
 from .base import (
     CancellationToken,
+    ChatMessage,
     LLMInterruptedError,
     LLMProtocolError,
     LLMRequest,
@@ -22,6 +24,7 @@ from .base import (
     ProviderResponseError,
     ProviderUnavailableError,
 )
+from jarvis.tools.types import ToolCall, ToolDefinition, ToolParameter
 
 
 def validate_loopback_endpoint(value: str) -> str:
@@ -106,6 +109,72 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
 def _optional_int(value: Any, name: str) -> int | None:
     item = _field(value, name)
     return item if isinstance(item, int) and not isinstance(item, bool) else None
+
+
+def _parameter_schema(parameter: ToolParameter) -> dict[str, object]:
+    schema: dict[str, object] = {
+        "type": parameter.kind.value,
+        "description": parameter.description,
+    }
+    if parameter.allowed_values:
+        schema["enum"] = list(parameter.allowed_values)
+    return schema
+
+
+def _tool_definition_to_ollama(definition: ToolDefinition) -> dict[str, object]:
+    return {
+        "type": "function",
+        "function": {
+            "name": definition.name,
+            "description": definition.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    parameter.name: _parameter_schema(parameter)
+                    for parameter in definition.parameters
+                },
+                "required": [parameter.name for parameter in definition.parameters if parameter.required],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _tool_call_to_ollama(call: ToolCall) -> dict[str, object]:
+    return {
+        "function": {
+            "name": call.name,
+            "arguments": dict(call.arguments),
+        }
+    }
+
+
+def _message_to_ollama(message: ChatMessage) -> dict[str, object]:
+    payload: dict[str, object] = {"role": message.role.value, "content": message.content}
+    if message.tool_calls:
+        payload["tool_calls"] = [_tool_call_to_ollama(call) for call in message.tool_calls]
+    if message.tool_result is not None:
+        payload["tool_name"] = message.tool_result.call.name
+        payload["content"] = json.dumps(
+            message.tool_result.model_payload(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return payload
+
+
+def _tool_call_from_ollama(value: Any) -> ToolCall:
+    function = _field(value, "function")
+    name = _field(function, "name") if function is not None else None
+    arguments = _field(function, "arguments") if function is not None else None
+    if not isinstance(name, str) or not name.strip():
+        raise LLMProtocolError("Ollama returned a tool call without a valid function name.")
+    if not isinstance(arguments, Mapping):
+        raise LLMProtocolError(f"Ollama returned invalid arguments for tool '{name}'.")
+    try:
+        return ToolCall(name, arguments)
+    except (TypeError, ValueError):
+        raise LLMProtocolError(f"Ollama returned an invalid tool name '{name}'.") from None
 
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
@@ -202,13 +271,18 @@ class OllamaLLM:
     ) -> LLMResponse:
         self._ensure_open()
         self._check_cancellation(cancellation)
+        request_options: dict[str, object] = {
+            "model": request.model,
+            "messages": [_message_to_ollama(message) for message in request.messages],
+            "stream": False,
+            "think": request.thinking,
+            "keep_alive": self._settings.keep_alive,
+        }
+        if request.tools:
+            request_options["tools"] = [_tool_definition_to_ollama(tool) for tool in request.tools]
         try:
             raw_response = self._client.chat(
-                model=request.model,
-                messages=[message.as_dict() for message in request.messages],
-                stream=False,
-                think=request.thinking,
-                keep_alive=self._settings.keep_alive,
+                **request_options,
             )
         except KeyboardInterrupt:
             raise LLMInterruptedError("The local model request was interrupted.") from None
@@ -226,15 +300,26 @@ class OllamaLLM:
         self._check_cancellation(cancellation)
         message = _field(raw_response, "message")
         text = _field(message, "content") if message is not None else None
-        if not isinstance(text, str) or not text.strip():
-            raise LLMProtocolError("Ollama returned an empty or malformed assistant response.")
-        visible_text = _visible_answer(text)
+        raw_tool_calls = _field(message, "tool_calls", ()) if message is not None else ()
+        if raw_tool_calls is None:
+            raw_tool_calls = ()
+        if not isinstance(raw_tool_calls, (list, tuple)):
+            raise LLMProtocolError("Ollama returned malformed tool calls.")
+        tool_calls = tuple(_tool_call_from_ollama(call) for call in raw_tool_calls)
+        visible_text = ""
+        if isinstance(text, str) and text.strip():
+            visible_text = _visible_answer(text)
+        elif text is not None and not isinstance(text, str):
+            raise LLMProtocolError("Ollama returned malformed assistant text.")
+        if not visible_text and not tool_calls:
+            raise LLMProtocolError("Ollama returned an empty assistant response.")
         response_model = _field(raw_response, "model", request.model)
         if not isinstance(response_model, str) or not response_model.strip():
             response_model = request.model
         return LLMResponse(
             text=visible_text,
             model=response_model,
+            tool_calls=tool_calls,
             total_duration_ns=_optional_int(raw_response, "total_duration"),
             load_duration_ns=_optional_int(raw_response, "load_duration"),
             prompt_eval_count=_optional_int(raw_response, "prompt_eval_count"),

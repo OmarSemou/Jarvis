@@ -15,6 +15,7 @@ from .base import (
     ProviderResponseError,
     ProviderUnavailableError,
 )
+from jarvis.tools.types import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 
 __all__ = [
     "CancellationToken",
@@ -30,4 +31,8 @@ __all__ = [
     "ModelUnavailableError",
     "ProviderResponseError",
     "ProviderUnavailableError",
+    "ToolCall",
+    "ToolDefinition",
+    "ToolResult",
+    "ToolResultStatus",
 ]

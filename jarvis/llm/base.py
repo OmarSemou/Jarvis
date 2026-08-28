@@ -7,23 +7,44 @@ from enum import StrEnum
 from threading import Event
 from typing import Protocol, runtime_checkable
 
+from jarvis.tools.types import ToolCall, ToolDefinition, ToolResult
+
 
 class MessageRole(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    TOOL = "tool"
 
 
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
     role: MessageRole
-    content: str
+    content: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_result: ToolResult | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, MessageRole):
             raise TypeError("message role must be a MessageRole")
-        if not isinstance(self.content, str) or not self.content.strip():
-            raise ValueError("message content must be a non-empty string")
+        if not isinstance(self.content, str):
+            raise TypeError("message content must be a string")
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
+        if any(not isinstance(call, ToolCall) for call in self.tool_calls):
+            raise TypeError("tool_calls must contain only ToolCall values")
+        if self.role in {MessageRole.SYSTEM, MessageRole.USER}:
+            if not self.content.strip() or self.tool_calls or self.tool_result is not None:
+                raise ValueError("system and user messages require text and cannot contain tool data")
+        elif self.role is MessageRole.ASSISTANT:
+            if not self.content.strip() and not self.tool_calls:
+                raise ValueError("assistant messages require text or tool calls")
+            if self.tool_result is not None:
+                raise ValueError("assistant messages cannot contain a tool result")
+        elif self.role is MessageRole.TOOL:
+            if self.tool_result is None or self.tool_calls:
+                raise ValueError("tool messages require exactly one ToolResult")
+            if not self.content.strip():
+                object.__setattr__(self, "content", self.tool_result.message)
 
     def as_dict(self) -> dict[str, str]:
         return {"role": self.role.value, "content": self.content}
@@ -34,6 +55,7 @@ class LLMRequest:
     model: str
     messages: tuple[ChatMessage, ...]
     thinking: bool = False
+    tools: tuple[ToolDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.model, str) or not self.model.strip():
@@ -42,12 +64,19 @@ class LLMRequest:
             raise TypeError("thinking must be a boolean")
         if not self.messages:
             raise ValueError("at least one message is required")
+        object.__setattr__(self, "tools", tuple(self.tools))
+        if any(not isinstance(tool, ToolDefinition) for tool in self.tools):
+            raise TypeError("tools must contain only ToolDefinition values")
+        tool_names = [tool.name for tool in self.tools]
+        if len(tool_names) != len(set(tool_names)):
+            raise ValueError("tool definition names must be unique")
 
 
 @dataclass(frozen=True, slots=True)
 class LLMResponse:
     text: str
     model: str
+    tool_calls: tuple[ToolCall, ...] = ()
     total_duration_ns: int | None = None
     load_duration_ns: int | None = None
     prompt_eval_count: int | None = None
@@ -55,10 +84,15 @@ class LLMResponse:
     eval_duration_ns: int | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.text, str) or not self.text.strip():
-            raise ValueError("response text must be a non-empty string")
+        if not isinstance(self.text, str):
+            raise TypeError("response text must be a string")
         if not isinstance(self.model, str) or not self.model.strip():
             raise ValueError("response model must be a non-empty string")
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
+        if any(not isinstance(call, ToolCall) for call in self.tool_calls):
+            raise TypeError("response tool_calls must contain only ToolCall values")
+        if not self.text.strip() and not self.tool_calls:
+            raise ValueError("response must contain text or tool calls")
 
 
 @dataclass(slots=True)

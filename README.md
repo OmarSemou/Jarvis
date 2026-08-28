@@ -2,8 +2,9 @@
 
 Jarvis is becoming a fully local, API-free personal companion robot. The
 repository now includes the **Phase 1 architecture and safety foundation** and
-**Phase 2A local text conversation** for Windows 11. It is not yet a voice
-assistant or physical robot.
+**Phase 2A local text conversation**, and **Phase 2B structured robot tools with
+a deterministic simulator** for Windows 11. It is not yet a voice assistant or
+physical robot.
 
 The project is derived from
 [Be More Agent](https://github.com/brenpoly/be-more-agent), an MIT-licensed
@@ -28,6 +29,11 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
 - Thinking control that defaults to off for lower latency.
 - Separate immutable policy, personality, and bounded customization sections.
 - A developer text CLI and an explicit local integration check.
+- Native structured Ollama tool calling translated into Jarvis-owned types.
+- An explicit 16-tool allowlist containing only semantic robot actions.
+- A bounded tool loop with deterministic validation and stop precedence.
+- A safety-gated controller and hardware-free simulated robot state machine.
+- Trusted developer-only simulator status and emergency-stop commands.
 
 The existing `agent.py` remains a compatibility launcher. Its audio, wake-word,
 Whisper, Piper, Ollama, camera, memory, and GUI implementations have not been
@@ -57,7 +63,11 @@ with:
 .\.venv\Scripts\python.exe -m jarvis chat
 ```
 
-The CLI supports `/status`, `/reset`, `/think on`, `/think off`, and `/quit`.
+The CLI supports `/status`, `/reset`, `/think on`, `/think off`,
+`/robot status`, `/robot estop`, `/robot estop-reset`, and `/quit`.
+Robot actions print concise developer events such as `[ROBOT] gesture=wave`.
+The `/robot estop-reset` command is trusted local CLI control and is not in the
+LLM tool registry.
 The explicit integration check performs one small local inference:
 
 ```powershell
@@ -87,6 +97,7 @@ Supported fields are:
 - `system_prompt`, `system_prompt_extras`
 - `input_device`, `input_sample_rate`
 - `llm_model`, `llm_thinking`, `conversation_max_turns`
+- `conversation_max_tool_rounds` (default `3`)
 - `ollama_host`, `ollama_connect_timeout_seconds`
 - `ollama_read_timeout_seconds`, `ollama_keep_alive`
 
@@ -96,7 +107,7 @@ tracked source locations. The new Ollama endpoint defaults to
 `http://127.0.0.1:11434`; only HTTP loopback addresses are accepted. The adapter
 disables environment proxy discovery and does not silently honor `OLLAMA_HOST`.
 
-`system_prompt` and `system_prompt_extras` participate in Phase 2A as an
+`system_prompt` and `system_prompt_extras` participate in Phase 2B as an
 explicitly bounded customization section. They cannot override immutable
 policy or grant capabilities. The tracked legacy `config.json` is retained for
 compatibility; put new private settings in ignored `data/config.json`.
@@ -120,13 +131,22 @@ disable motor enable/power independently of software, networking, and the
 desktop computer. See [docs/architecture.md](docs/architecture.md) and
 [docs/safety.md](docs/safety.md).
 
+Phase 2B uses explicit synthetic clear/fresh/ready sensor inputs for desktop
+simulation. Every robot tool becomes a high-level `RobotIntent`, passes the
+existing `SafetySupervisor`, and reaches the simulator only as an
+`ApprovedRobotIntent`. An e-stop blocks base and expressive simulated motion;
+`stop` and the screen-only `set_expression` action remain available.
+
+The simulator demonstrates software architecture and test behavior only. It is
+not hardware safety validation and says nothing about real braking distance,
+electrical faults, motor drivers, sensor coverage, watchdogs, or emergency-stop
+circuits.
+
 ## Not implemented yet
 
-Voice/audio, wake word, camera/vision, web search, persistent memory, robot tool
-calling, and physical movement are not part of Phase 2A. Later phases will add
-those capabilities incrementally, beginning with simulator-safe high-level
-robot tools before physical controllers. Raspberry Pi deployment comes after
-desktop and simulator validation.
+Voice/audio, wake word, camera/vision, web search, persistent memory, ESP32
+communication, motors, servos, and physical movement are not part of Phase 2B.
+Raspberry Pi deployment comes after desktop and simulator validation.
 
 ## Legacy files
 

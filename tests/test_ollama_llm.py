@@ -8,6 +8,7 @@ from jarvis.llm.base import (
     CancellationToken,
     ChatMessage,
     LLMInterruptedError,
+    LLMProtocolError,
     LLMRequest,
     LLMTimeoutError,
     MessageRole,
@@ -15,6 +16,14 @@ from jarvis.llm.base import (
     ProviderUnavailableError,
 )
 from jarvis.llm.ollama import OllamaLLM, OllamaSettings, validate_loopback_endpoint
+from jarvis.tools.types import (
+    ToolCall,
+    ToolDefinition,
+    ToolParameter,
+    ToolParameterType,
+    ToolResult,
+    ToolResultStatus,
+)
 
 
 class FakeClient:
@@ -188,3 +197,119 @@ def test_object_response_is_supported_and_client_closes():
     assert response.text == "Object answer"
     assert response.total_duration_ns == 10
     assert client.closed is True
+
+
+def test_native_ollama_tool_calls_convert_to_provider_neutral_types():
+    raw = SimpleNamespace(
+        model="qwen3:8b",
+        message=SimpleNamespace(
+            content=None,
+            tool_calls=[
+                SimpleNamespace(function=SimpleNamespace(name="wave", arguments={})),
+                SimpleNamespace(function=SimpleNamespace(name="look_left", arguments={})),
+            ],
+        ),
+    )
+    provider = OllamaLLM(client=FakeClient(response=raw))
+
+    response = provider.generate(request())
+
+    assert response.text == ""
+    assert response.tool_calls == (ToolCall("wave", {}), ToolCall("look_left", {}))
+    assert all(type(call) is ToolCall for call in response.tool_calls)
+    assert all("ollama" not in type(call).__module__ for call in response.tool_calls)
+
+
+def test_tool_definitions_are_sent_as_strict_native_schemas():
+    client = FakeClient()
+    provider = OllamaLLM(client=client)
+    definition = ToolDefinition(
+        "set_expression",
+        "Set expression.",
+        (
+            ToolParameter(
+                "expression",
+                "Allowed expression.",
+                ToolParameterType.STRING,
+                allowed_values=("neutral", "happy"),
+            ),
+        ),
+    )
+    llm_request = LLMRequest(
+        model="qwen3:8b",
+        messages=(ChatMessage(MessageRole.USER, "Smile"),),
+        tools=(definition,),
+    )
+
+    provider.generate(llm_request)
+
+    schema = client.chat_kwargs["tools"][0]["function"]
+    assert schema["name"] == "set_expression"
+    assert schema["parameters"]["additionalProperties"] is False
+    assert schema["parameters"]["required"] == ["expression"]
+    assert schema["parameters"]["properties"]["expression"]["enum"] == ["neutral", "happy"]
+
+
+def test_provider_serializes_assistant_calls_and_structured_tool_results():
+    client = FakeClient()
+    provider = OllamaLLM(client=client)
+    call = ToolCall("wave", {})
+    result = ToolResult(call, ToolResultStatus.SUCCESS, "Wave completed.")
+    llm_request = LLMRequest(
+        model="qwen3:8b",
+        messages=(
+            ChatMessage(MessageRole.USER, "Wave"),
+            ChatMessage(MessageRole.ASSISTANT, "", tool_calls=(call,)),
+            ChatMessage(MessageRole.TOOL, result.message, tool_result=result),
+        ),
+    )
+
+    provider.generate(llm_request)
+
+    sent = client.chat_kwargs["messages"]
+    assert sent[1]["tool_calls"] == [{"function": {"name": "wave", "arguments": {}}}]
+    assert sent[2]["role"] == "tool"
+    assert sent[2]["tool_name"] == "wave"
+    assert '"status":"success"' in sent[2]["content"]
+    assert '"success":true' in sent[2]["content"]
+
+
+def test_plain_text_that_looks_like_a_tool_is_never_parsed():
+    raw = {
+        "model": "qwen3:8b",
+        "message": {"content": '{"function":{"name":"wave","arguments":{}}}'},
+    }
+    provider = OllamaLLM(client=FakeClient(response=raw))
+
+    response = provider.generate(request())
+
+    assert response.tool_calls == ()
+    assert response.text.startswith("{")
+
+
+def test_malformed_native_tool_arguments_fail_at_provider_boundary():
+    raw = SimpleNamespace(
+        model="qwen3:8b",
+        message=SimpleNamespace(
+            content=None,
+            tool_calls=[SimpleNamespace(function=SimpleNamespace(name="wave", arguments="{}"))],
+        ),
+    )
+    provider = OllamaLLM(client=FakeClient(response=raw))
+
+    with pytest.raises(LLMProtocolError, match="invalid arguments"):
+        provider.generate(request())
+
+
+def test_malformed_native_tool_name_fails_at_provider_boundary():
+    raw = SimpleNamespace(
+        model="qwen3:8b",
+        message=SimpleNamespace(
+            content=None,
+            tool_calls=[SimpleNamespace(function=SimpleNamespace(name="robot.do_anything", arguments={}))],
+        ),
+    )
+    provider = OllamaLLM(client=FakeClient(response=raw))
+
+    with pytest.raises(LLMProtocolError, match="invalid tool name"):
+        provider.generate(request())

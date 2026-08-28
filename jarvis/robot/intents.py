@@ -28,9 +28,13 @@ class RobotAction(StrEnum):
 class RobotExpression(StrEnum):
     NEUTRAL = "neutral"
     HAPPY = "happy"
+    AMUSED = "amused"
     CURIOUS = "curious"
+    CONFUSED = "confused"
     THINKING = "thinking"
     CONCERNED = "concerned"
+    EXCITED = "excited"
+    SLEEPY = "sleepy"
     SURPRISED = "surprised"
 
 

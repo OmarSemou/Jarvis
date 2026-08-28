@@ -121,6 +121,7 @@ def test_phase2a_model_and_thinking_defaults():
     assert config.llm_thinking is False
     assert config.ollama_host == "http://127.0.0.1:11434"
     assert config.conversation_max_turns == 12
+    assert config.conversation_max_tool_rounds == 3
 
 
 def test_phase2a_configuration_is_parsed():
@@ -129,6 +130,7 @@ def test_phase2a_configuration_is_parsed():
             "llm_model": "qwen3:14b",
             "llm_thinking": True,
             "conversation_max_turns": 4,
+            "conversation_max_tool_rounds": 2,
             "ollama_host": "http://localhost:11434",
             "ollama_connect_timeout_seconds": 2,
             "ollama_read_timeout_seconds": 30.5,
@@ -139,6 +141,7 @@ def test_phase2a_configuration_is_parsed():
     assert result.config.llm_model == "qwen3:14b"
     assert result.config.llm_thinking is True
     assert result.config.conversation_max_turns == 4
+    assert result.config.conversation_max_tool_rounds == 2
     assert result.config.ollama_connect_timeout_seconds == 2.0
     assert result.config.ollama_read_timeout_seconds == 30.5
 
@@ -148,6 +151,7 @@ def test_phase2a_configuration_is_parsed():
     [
         ({"llm_thinking": 1}, "'llm_thinking' must be a boolean"),
         ({"conversation_max_turns": 0}, "'conversation_max_turns' must be an integer"),
+        ({"conversation_max_tool_rounds": 0}, "'conversation_max_tool_rounds' must be an integer"),
         ({"ollama_connect_timeout_seconds": True}, "must be a number"),
         ({"ollama_read_timeout_seconds": float("inf")}, "must be a number"),
         ({"ollama_keep_alive": ""}, "must be a non-empty string"),

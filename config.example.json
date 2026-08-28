@@ -11,6 +11,7 @@
   "llm_model": "qwen3:8b",
   "llm_thinking": false,
   "conversation_max_turns": 12,
+  "conversation_max_tool_rounds": 3,
   "ollama_host": "http://127.0.0.1:11434",
   "ollama_connect_timeout_seconds": 3.0,
   "ollama_read_timeout_seconds": 120.0,

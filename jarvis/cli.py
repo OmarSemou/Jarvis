@@ -1,10 +1,11 @@
-"""Small developer CLI for the Phase 2A local text path."""
+"""Developer CLI for local text conversation and the safe robot simulator."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from time import perf_counter
 
 from jarvis.core.config import ConfigValidationError, JarvisConfig, load_for_paths
@@ -19,10 +20,26 @@ from jarvis.llm.base import (
 )
 from jarvis.llm.ollama import OllamaLLM, OllamaSettings
 from jarvis.personality.prompt import build_system_prompt
+from jarvis.robot.controller import SafeRobotController, create_simulated_controller
+from jarvis.robot.safety import SafetyAuthority
+from jarvis.tools.policy import RobotToolPolicy
+from jarvis.tools.registry import RobotToolRegistry
+from jarvis.tools.types import ToolExecutor
 
 
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
+
+
+@dataclass(frozen=True, slots=True)
+class RobotRuntime:
+    controller: SafeRobotController
+    tools: RobotToolPolicy
+
+
+def create_robot_runtime(*, output_fn: OutputFunction | None = None) -> RobotRuntime:
+    controller = create_simulated_controller(event_sink=output_fn)
+    return RobotRuntime(controller, RobotToolPolicy(RobotToolRegistry(), controller))
 
 
 def create_ollama_provider(config: JarvisConfig) -> OllamaLLM:
@@ -36,18 +53,24 @@ def create_ollama_provider(config: JarvisConfig) -> OllamaLLM:
     )
 
 
-def create_conversation(config: JarvisConfig) -> ConversationService:
+def create_conversation(
+    config: JarvisConfig,
+    *,
+    tool_executor: ToolExecutor | None = None,
+) -> ConversationService:
     return ConversationService(
         create_ollama_provider(config),
         ConversationSettings(
             model=config.llm_model,
             max_turns=config.conversation_max_turns,
             thinking=config.llm_thinking,
+            max_tool_rounds=config.conversation_max_tool_rounds,
         ),
         system_prompt=build_system_prompt(
             configured_prompt=config.system_prompt,
             configured_extras=config.system_prompt_extras,
         ),
+        tool_executor=tool_executor,
     )
 
 
@@ -58,13 +81,30 @@ def _format_status(service: ConversationService) -> str:
         f"Endpoint: {status.endpoint}\n"
         f"Model: {status.model}\n"
         f"Thinking: {'on' if status.thinking else 'off'}\n"
-        f"History: {status.history_turns}/{status.max_turns} turns"
+        f"History: {status.history_turns}/{status.max_turns} turns\n"
+        f"Robot tools: {'enabled' if status.tools_enabled else 'disabled'}\n"
+        f"Tool round limit: {status.max_tool_rounds}"
+    )
+
+
+def _format_robot_status(controller: SafeRobotController) -> str:
+    state = controller.state
+    gesture = state.last_gesture.value if state.last_gesture is not None else "none"
+    return (
+        "Robot simulation\n"
+        f"Motion: {state.motion.value}\n"
+        f"Following: {'yes' if state.following else 'no'}\n"
+        f"Head: {state.head.value}\n"
+        f"Expression: {state.expression.value}\n"
+        f"Last gesture: {gesture}\n"
+        f"E-stop: {'latched' if state.emergency_stop_latched else 'clear'}"
     )
 
 
 def run_chat(
     service: ConversationService,
     *,
+    robot_controller: SafeRobotController | None = None,
     input_fn: InputFunction = input,
     output_fn: OutputFunction = print,
 ) -> int:
@@ -72,7 +112,10 @@ def run_chat(
     output_fn("Jarvis Local")
     output_fn(f"Model: {status.model}")
     output_fn(f"Thinking: {'on' if status.thinking else 'off'}")
-    output_fn("Commands: /status, /reset, /think on, /think off, /quit")
+    output_fn(
+        "Commands: /status, /reset, /think on, /think off, "
+        "/robot status, /robot estop, /robot estop-reset, /quit"
+    )
 
     while True:
         try:
@@ -92,7 +135,7 @@ def run_chat(
             return 0
         if command == "/reset":
             service.reset()
-            output_fn("Conversation reset.")
+            output_fn("Conversation reset. Robot and safety state unchanged.")
             continue
         if command == "/status":
             output_fn(_format_status(service))
@@ -101,8 +144,33 @@ def run_chat(
             service.set_thinking(command.endswith("on"))
             output_fn(f"Thinking {'on' if service.thinking else 'off'}.")
             continue
+        if command == "/robot status":
+            if robot_controller is None:
+                output_fn("Robot simulation unavailable.")
+            else:
+                output_fn(_format_robot_status(robot_controller))
+            continue
+        if command == "/robot estop":
+            if robot_controller is None:
+                output_fn("Robot simulation unavailable.")
+            else:
+                transition = robot_controller.latch_emergency_stop(
+                    authority=SafetyAuthority.LOCAL_OPERATOR
+                )
+                output_fn(transition.message.capitalize() + ".")
+            continue
+        if command == "/robot estop-reset":
+            if robot_controller is None:
+                output_fn("Robot simulation unavailable.")
+            else:
+                transition = robot_controller.reset_emergency_stop(
+                    authority=SafetyAuthority.LOCAL_OPERATOR
+                )
+                prefix = "Reset accepted" if transition.accepted else "Reset denied"
+                output_fn(f"{prefix}: {transition.message}.")
+            continue
         if command.startswith("/"):
-            output_fn("Unknown command. Use /status, /reset, /think on, /think off, or /quit.")
+            output_fn("Unknown command. Use /status for the command list.")
             continue
 
         try:
@@ -122,12 +190,13 @@ def _load_runtime_config() -> JarvisConfig:
 
 def chat_command(output_fn: OutputFunction = print) -> int:
     try:
-        service = create_conversation(_load_runtime_config())
+        runtime = create_robot_runtime(output_fn=output_fn)
+        service = create_conversation(_load_runtime_config(), tool_executor=runtime.tools)
     except (ConfigValidationError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
         return 2
     try:
-        return run_chat(service, output_fn=output_fn)
+        return run_chat(service, robot_controller=runtime.controller, output_fn=output_fn)
     finally:
         service.close()
 
