@@ -1,11 +1,11 @@
 # Jarvis
 
 Jarvis is becoming a fully local, API-free personal companion robot. The
-repository now includes the **Phase 1 architecture and safety foundation** and
-**Phase 2A local text conversation**, and **Phase 2B structured robot tools with
-a deterministic simulator** for Windows 11. **Phase 2C1.1 adds configurable
-multilingual push-to-talk hearing and a local whisper.cpp benchmark.** Jarvis does not yet speak, listen
-continuously, or control a physical robot.
+repository now includes the **Phase 1 architecture and safety foundation**,
+**Phase 2A local text conversation**, **Phase 2B structured robot tools with a
+deterministic simulator**, and **Phase 2C local push-to-talk hearing and local
+speech output** for Windows 11. Jarvis does not listen continuously or control
+a physical robot.
 
 The project is derived from
 [Be More Agent](https://github.com/brenpoly/be-more-agent), an MIT-licensed
@@ -44,8 +44,14 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
   and simulator path as typed text.
 - Private recording deletion by default plus LLM-free `stt-check` and bilingual
   `stt-benchmark` commands.
+- Provider-neutral, fully local English TTS through pinned CPU builds of
+  `kokoro-onnx` or Open Home Foundation Piper.
+- Synchronous in-memory PCM16 playback through a session-selectable Windows
+  speaker, with text-only fallback on every expected failure.
+- An LLM-free, STT-free, playback-free `tts-benchmark` command covering four
+  Kokoro and two Piper voice candidates.
 
-The existing `agent.py` remains a compatibility launcher. Phase 2C1.1 does not
+The existing `agent.py` remains a compatibility launcher. Phase 2C2 does not
 reuse its legacy last-stdout-line Whisper parsing or GUI audio thread. Wake
 word, Piper, camera, memory, and GUI implementations there have not been
 modularized. The new chat/hearing path does not use the legacy `BotGUI` class.
@@ -76,7 +82,9 @@ with:
 
 The CLI supports `/status`, `/reset`, `/think on`, `/think off`,
 `/robot status`, `/robot estop`, `/robot estop-reset`, `/talk`, `/stt status`, `/mic list`,
-`/mic status`, `/mic use <device>`, and `/quit`.
+`/mic status`, `/mic use <device>`, `/voice status`, `/voice on`, `/voice off`,
+`/voice provider <kokoro|piper>`, `/voice use <voice>`, `/speaker list`,
+`/speaker status`, `/speaker use <device>`, and `/quit`.
 Robot actions print concise developer events such as `[ROBOT] gesture=wave`.
 The `/robot estop-reset` command is trusted local CLI control and is not in the
 LLM tool registry.
@@ -146,7 +154,42 @@ Run the read-only diagnostic with:
 The diagnostic remains read-only: it performs no downloads, installations,
 network requests, subprocess execution, model inference, or recording-stream
 activation. When `sounddevice` is installed it enumerates input-device metadata
-to report the configured/default microphone, but it does not record.
+and output-device metadata to report the configured/default microphone and
+speaker, but it does not record or play sound.
+
+### Local speech setup and benchmark (Windows)
+
+Install or verify both pinned CPU providers and their curated English voices:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_tts_windows.ps1
+```
+
+Use `-Providers kokoro` or `-Providers piper` to set up one provider. The script
+installs only into `.venv`, verifies every downloaded model/config with a pinned
+SHA-256, refuses to replace a hash-mismatched local asset unless `-Force` is
+explicit, and never modifies global `PATH`. Normal Jarvis startup does not
+install or download anything.
+
+Generate labeled listening samples and timing summaries without Ollama,
+Whisper, microphone access, speaker playback, or network access:
+
+```powershell
+.\.venv\Scripts\python.exe -m jarvis tts-benchmark
+```
+
+The 48 WAV files remain under ignored `data/benchmarks/tts/<timestamp>/` so a
+human can compare voice quality. Remove exactly one run later with:
+
+```powershell
+.\.venv\Scripts\python.exe -m jarvis tts-benchmark-clean "<run-directory>"
+```
+
+Speech is disabled by default while the voice comparison is pending. In chat,
+use `/voice on` to enable the configured provider/voice for the session. Both
+typed and `/talk` responses are spoken only after the complete text response is
+visible. Audio is synthesized to memory, played synchronously, and not retained.
+See [docs/audio.md](docs/audio.md) for provider and latency details.
 
 ## Configuration
 
@@ -169,6 +212,11 @@ Supported fields are:
 - `stt_language` (`auto`, `en`, or `da`; default `auto`)
 - `stt_timeout_seconds`, `stt_use_gpu` (default `false` in Phase 2C1.1)
 - `retain_recordings` (default `false`)
+- `output_device` (default `null`, meaning the system default output)
+- `tts_enabled` (default `false` while voice selection is pending)
+- `tts_provider` (`kokoro` or `piper`)
+- `tts_voice` (must belong to the selected curated provider allowlist)
+- `tts_speed` (`0.5` through `2.0`), `tts_language` (`en` in Phase 2C2)
 
 Unknown keys and legacy aliases are handled deliberately by
 `jarvis.core.config`. Runtime data is written beneath ignored `data/`, not into
@@ -218,21 +266,28 @@ not hardware safety validation and says nothing about real braking distance,
 electrical faults, motor drivers, sensor coverage, watchdogs, or emergency-stop
 circuits.
 
+TTS receives only the final assistant response text in the CLI coordinator. It
+cannot call tools, mutate the simulator, refresh safety heartbeats, clear an
+e-stop, or bypass robot policy. No SafetySupervisor behavior changed in 2C2.
+
 ## Privacy and local execution
 
 Microphone recordings use unique names beneath ignored `data/recordings/`.
 They are deleted after successful or failed transcription unless
 `retain_recordings` is explicitly set to `true`. Temporary Whisper output is
 also deleted. Jarvis does not log raw audio or invoke a cloud speech service.
-The Phase 2C1.1 build is CPU-only; `stt_use_gpu` remains false. Vulkan and
+Normal synthesized response audio stays in memory and is discarded after
+synchronous playback. Only an explicit `tts-benchmark` retains generated WAVs,
+under ignored runtime storage, until an explicit cleanup command. The Phase
+2C2 speech stack is CPU-only; `stt_use_gpu` remains false. Vulkan and
 other acceleration backends remain deferred until a later,
 explicit acceleration decision.
 
 ## Not implemented yet
 
-TTS/speech playback, wake word, VAD, barge-in/interruption, face GUI,
+Wake word, VAD, barge-in/interruption, streaming synthesis, face GUI,
 camera/vision, web search, persistent memory, ESP32 communication, motors,
-servos, and physical movement are not part of Phase 2C1.1. Raspberry Pi
+servos, and physical movement are not part of Phase 2C2. Raspberry Pi
 deployment comes after desktop and simulator validation.
 
 ## Legacy files

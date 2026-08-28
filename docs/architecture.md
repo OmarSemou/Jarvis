@@ -6,8 +6,10 @@ Phase 1 introduced side-effect-free configuration, path, application-state,
 preflight, robot-intent, and safety contracts. Phase 2A added local text
 conversation through Ollama. Phase 2B adds native structured tool calling and
 a deterministic safe robot simulator. Phase 2C1.1 adds configurable microphone
-capture, local speech recognition, and comparative STT benchmarking. The upstream `agent.py` remains the
-compatibility launcher. Wake word, speech synthesis, camera capture, memory
+capture, local speech recognition, and comparative STT benchmarking. Phase
+2C2 adds provider-neutral local speech synthesis, speaker playback, and a
+retained listening benchmark. The upstream `agent.py` remains the compatibility
+launcher. Wake word, streaming/interruption, camera capture, memory
 storage, physical hardware, and Tkinter orchestration remain outside the new
 path until later phases.
 
@@ -111,8 +113,8 @@ required 16 kHz WAV; there is no hidden ffmpeg dependency.
 The Whisper adapter uses an explicit argument vector with `shell=False`, a
 bounded timeout, captured stdout/stderr, return-code checks, and the documented
 `--output-txt`/`--output-file` mechanism. Transcripts are read from the exact
-generated file—not inferred from console lines. Executable and model paths
-The executable comes from validated local configuration. The symbolic
+generated file—not inferred from console lines. The executable comes from
+validated local configuration. The symbolic
 `stt_model` value is restricted to `base` or `small` and maps to a fixed local
 path; arbitrary model paths are not accepted. Phase 2C1.1 passes `--no-gpu` and
 uses the official CPU release. A future backend executable can be selected in
@@ -139,6 +141,42 @@ Recordings are uniquely named beneath ignored `data/recordings/` and deleted
 after success or failure by default. Whisper output uses a unique ignored
 `data/stt/` working directory and is always cleaned up. `retain_recordings=true`
 is the only supported retention opt-in.
+
+## Phase 2C2 local speech-output path
+
+```text
+final ConversationService response text
+  -> CLI coordinator prints text
+  -> TTSService selects one allowlisted local provider/voice
+  -> KokoroTTS or PiperTTS (CPU ONNX)
+  -> provider-neutral SynthesizedAudio (PCM16/rate/channels)
+  -> AudioPlaybackService selects a local output
+  -> sounddevice RawOutputStream
+```
+
+This dependency flows in one direction. `ConversationService` remains unaware
+of speech synthesis and playback. The LLM and robot tool layers cannot select
+a provider, voice, model path, speaker, or generated audio. TTS consumes only
+the already-final assistant text and holds no robot or SafetySupervisor
+reference. Speech therefore has no route to tools, motion, heartbeat, or
+emergency-stop authority.
+
+Both providers load packages and models lazily on the first explicit synthesis.
+Playback loads sounddevice and opens a stream only for explicit device commands
+or actual speech. Importing modules has no device, inference, network,
+subprocess, or filesystem side effects. Normal response audio remains in
+memory. The explicit benchmark is separate from conversation and playback:
+
+```text
+tts-benchmark
+  -> fixed eight-phrase English corpus
+  -> four Kokoro plus two Piper candidates, sequentially
+  -> labeled retained WAV samples in ignored runtime storage
+  -> per-sample and aggregate timing report
+```
+
+The benchmark makes no LLM or STT calls. A guarded explicit cleanup removes
+one direct benchmark run, never the benchmark root or an arbitrary path.
 
 ## Long-term authority path
 
@@ -181,6 +219,12 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.audio.benchmark`: fixed-corpus comparison, scoring, aggregation, and cleanup.
 - `jarvis.audio.stt.base`: provider-neutral transcription result/error contract.
 - `jarvis.audio.stt.whisper_cpp`: bounded local subprocess adapter.
+- `jarvis.audio.tts.base`: provider-neutral PCM16 and structured result/error contracts.
+- `jarvis.audio.tts.kokoro`: lazy local `kokoro-onnx` CPU adapter.
+- `jarvis.audio.tts.piper`: lazy local OHF Piper CPU adapter.
+- `jarvis.audio.tts.playback`: lazy output discovery and synchronous PCM16 playback.
+- `jarvis.audio.tts.service`: session selection and synthesize-then-play coordination.
+- `jarvis.audio.tts.benchmark`: fixed-corpus local synthesis and guarded sample cleanup.
 - `jarvis.core.conversation`: provider-independent in-memory turn orchestration.
 - `jarvis.llm.base`: provider-neutral messages, responses, cancellation, and errors.
 - `jarvis.llm.ollama`: explicit loopback-only Ollama transport adapter.
@@ -196,7 +240,7 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.robot.controller`: safety-gated semantic simulator controller.
 - `jarvis.robot.simulator`: deterministic in-memory robot state and event log.
 
-Future modules will add local TTS, wake word, VAD, interruption, memory, face,
+Future modules will add wake word, VAD, streaming/early TTS, interruption, memory, face,
 vision, integrations, physical robot components, and ESP32 transport. None of
-those integrations is part of Phase 2C1.1. Microphone/STT testing and the robot
+those integrations is part of Phase 2C2. Microphone/STT/TTS testing and the robot
 simulator are not hardware safety validation.

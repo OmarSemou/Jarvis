@@ -1,4 +1,4 @@
-"""Read-only, platform-aware Jarvis Phase 2C1.1 diagnostics."""
+"""Read-only, platform-aware Jarvis Phase 2C2 diagnostics."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from jarvis.audio.devices import MicrophoneDeviceService, MicrophoneStatus
+from jarvis.audio.tts.playback import AudioPlaybackService, SpeakerStatus
 
 from .config import ConfigValidationError, JarvisConfig, load_for_paths
 from .paths import JarvisPaths
@@ -56,6 +57,7 @@ WhichFunction = Callable[[str], str | None]
 ExistsFunction = Callable[[Path], bool]
 ModuleFunction = Callable[[str], bool]
 MicrophoneProbe = Callable[[int | str | None], MicrophoneStatus]
+SpeakerProbe = Callable[[int | str | None], SpeakerStatus]
 
 
 def _module_available(name: str) -> bool:
@@ -64,6 +66,10 @@ def _module_available(name: str) -> bool:
 
 def _microphone_probe(configured: int | str | None) -> MicrophoneStatus:
     return MicrophoneDeviceService(configured).status()
+
+
+def _speaker_probe(configured: int | str | None) -> SpeakerStatus:
+    return AudioPlaybackService(configured).status()
 
 
 def _first_file(candidates: Iterable[Path], exists: ExistsFunction) -> Path | None:
@@ -99,6 +105,7 @@ def run_preflight(
     platform_name: str | None = None,
     environment: Mapping[str, str] | None = None,
     microphone_probe: MicrophoneProbe = _microphone_probe,
+    speaker_probe: SpeakerProbe = _speaker_probe,
     config: JarvisConfig | None = None,
 ) -> PreflightReport:
     """Inspect local availability without streams, subprocesses, or network I/O."""
@@ -200,15 +207,57 @@ def run_preflight(
             )
         )
     checks.append(
-        _executable_check(
-            "Piper",
-            RequirementLevel.FUTURE,
-            ("piper.exe", "piper") if platform_value.startswith("win") else ("piper", "piper.exe"),
-            paths.piper_executable_candidates,
-            which=which,
-            exists=exists,
+        PreflightCheck(
+            "kokoro-onnx",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if module_available("kokoro_onnx") else CheckStatus.MISSING,
+            "local CPU TTS provider package installed"
+            if module_available("kokoro_onnx")
+            else "run scripts/setup_tts_windows.ps1 -Providers kokoro",
         )
     )
+    checks.append(
+        PreflightCheck(
+            "Piper package",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if module_available("piper") else CheckStatus.MISSING,
+            "local OHF Piper TTS package installed"
+            if module_available("piper")
+            else "run scripts/setup_tts_windows.ps1 -Providers piper",
+        )
+    )
+    for name, path in (
+        ("Kokoro model", paths.kokoro_model),
+        ("Kokoro voice bundle", paths.kokoro_voices),
+    ):
+        found = exists(path)
+        checks.append(
+            PreflightCheck(
+                name,
+                RequirementLevel.CURRENT,
+                CheckStatus.AVAILABLE if found else CheckStatus.MISSING,
+                "pinned local asset found" if found else "pinned local asset missing",
+                path,
+            )
+        )
+    for voice in ("en_US-joe-medium", "en_US-john-medium"):
+        model_path, voice_config = paths.piper_voice_files(voice)
+        for suffix, path in (("model", model_path), ("config", voice_config)):
+            found = exists(path)
+            selected = config.tts_provider == "piper" and config.tts_voice == voice
+            checks.append(
+                PreflightCheck(
+                    f"Piper {voice} {suffix}",
+                    RequirementLevel.CURRENT,
+                    CheckStatus.AVAILABLE if found else CheckStatus.MISSING,
+                    (
+                        f"pinned local asset found ({'selected' if selected else 'benchmark candidate'})"
+                        if found
+                        else f"pinned local asset missing ({'selected' if selected else 'benchmark candidate'})"
+                    ),
+                    path,
+                )
+            )
     checks.append(
         PreflightCheck(
             "Wake-word model",
@@ -224,9 +273,9 @@ def run_preflight(
             "sounddevice",
             RequirementLevel.CURRENT,
             CheckStatus.AVAILABLE if sounddevice_available else CheckStatus.MISSING,
-            "local microphone dependency installed"
+            "local audio input/output dependency installed"
             if sounddevice_available
-            else "install project requirements for microphone capture",
+            else "install project requirements for microphone and speaker support",
         )
     )
     if sounddevice_available:
@@ -249,6 +298,26 @@ def run_preflight(
             "not inspected because sounddevice is unavailable",
         )
     checks.append(microphone_check)
+    if sounddevice_available:
+        speaker = speaker_probe(config.output_device)
+        speaker_check = PreflightCheck(
+            "Speaker",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if speaker.available else CheckStatus.MISSING,
+            (
+                f"{speaker.selected.index}: {speaker.selected.name} ({speaker.detail}); no sound played"
+                if speaker.available and speaker.selected is not None
+                else speaker.detail
+            ),
+        )
+    else:
+        speaker_check = PreflightCheck(
+            "Speaker",
+            RequirementLevel.CURRENT,
+            CheckStatus.NOT_CHECKED,
+            "not inspected because sounddevice is unavailable",
+        )
+    checks.append(speaker_check)
     camera_backend = module_available("cv2") or bool(which("rpicam-still"))
     checks.append(
         PreflightCheck(
@@ -262,7 +331,7 @@ def run_preflight(
 
 
 def format_report(report: PreflightReport) -> str:
-    lines = ["Jarvis Phase 2C1.1 preflight (read-only)", ""]
+    lines = ["Jarvis Phase 2C2 preflight (read-only)", ""]
     for check in report.checks:
         path = f" [{check.path}]" if check.path is not None else ""
         lines.append(f"{check.status.value:11} {check.level.value:15} {check.name}: {check.detail}{path}")

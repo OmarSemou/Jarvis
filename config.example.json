@@ -21,5 +21,11 @@
   "stt_language": "auto",
   "stt_timeout_seconds": 180.0,
   "stt_use_gpu": false,
-  "retain_recordings": false
+  "retain_recordings": false,
+  "output_device": null,
+  "tts_enabled": false,
+  "tts_provider": "kokoro",
+  "tts_voice": "am_michael",
+  "tts_speed": 1.0,
+  "tts_language": "en"
 }

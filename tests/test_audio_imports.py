@@ -14,6 +14,7 @@ def forbidden(*args, **kwargs):
 fake_sounddevice = types.ModuleType("sounddevice")
 fake_sounddevice.query_devices = forbidden
 fake_sounddevice.RawInputStream = forbidden
+fake_sounddevice.RawOutputStream = forbidden
 sys.modules["sounddevice"] = fake_sounddevice
 subprocess.run = forbidden
 
@@ -22,6 +23,11 @@ import jarvis.audio.devices
 import jarvis.audio.recorder
 import jarvis.audio.stt.base
 import jarvis.audio.stt.whisper_cpp
+import jarvis.audio.tts.base
+import jarvis.audio.tts.kokoro
+import jarvis.audio.tts.piper
+import jarvis.audio.tts.playback
+import jarvis.audio.tts.service
 '''
 
     result = subprocess.run(

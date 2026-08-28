@@ -7,5 +7,10 @@ ollama>=0.6.2,<0.7
 # the Windows wheel includes the PortAudio pieces needed by sounddevice.
 sounddevice>=0.5.6,<0.6
 
+# Phase 2C2 local CPU speech synthesis. Models/voices are installed explicitly
+# by scripts/setup_tts_windows.ps1 and never downloaded during normal startup.
+kokoro-onnx==0.6.1
+piper-tts==1.7.0
+
 # Development tests remain isolated from Ollama, network, GPU, and hardware.
 pytest>=8.3,<9

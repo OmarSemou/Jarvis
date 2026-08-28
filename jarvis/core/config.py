@@ -64,8 +64,19 @@ KNOWN_KEYS = frozenset(
         "stt_timeout_seconds",
         "stt_use_gpu",
         "retain_recordings",
+        "output_device",
+        "tts_enabled",
+        "tts_provider",
+        "tts_voice",
+        "tts_speed",
+        "tts_language",
     }
 )
+
+SUPPORTED_TTS_VOICES: dict[str, frozenset[str]] = {
+    "kokoro": frozenset({"am_fenrir", "am_michael", "am_puck", "bm_george"}),
+    "piper": frozenset({"en_US-joe-medium", "en_US-john-medium"}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +108,12 @@ class JarvisConfig:
     stt_timeout_seconds: float = 180.0
     stt_use_gpu: bool = False
     retain_recordings: bool = False
+    output_device: int | str | None = None
+    tts_enabled: bool = False
+    tts_provider: str = "kokoro"
+    tts_voice: str = "am_michael"
+    tts_speed: float = 1.0
+    tts_language: str = "en"
 
     def effective_system_prompt(self, fallback: str) -> str:
         """Return the configured prompt, then append optional extra guidance."""
@@ -132,6 +149,12 @@ class JarvisConfig:
             "stt_timeout_seconds": self.stt_timeout_seconds,
             "stt_use_gpu": self.stt_use_gpu,
             "retain_recordings": self.retain_recordings,
+            "output_device": self.output_device,
+            "tts_enabled": self.tts_enabled,
+            "tts_provider": self.tts_provider,
+            "tts_voice": self.tts_voice,
+            "tts_speed": self.tts_speed,
+            "tts_language": self.tts_language,
         }
 
 
@@ -281,6 +304,38 @@ def parse_config(
     if not isinstance(retain_recordings, bool):
         problems.append("'retain_recordings' must be a boolean")
 
+    output_device = merged["output_device"]
+    if output_device is not None:
+        if _is_int(output_device):
+            if output_device < 0:
+                problems.append("'output_device' integer must be non-negative")
+        elif isinstance(output_device, str):
+            if not output_device.strip():
+                problems.append("'output_device' string must not be empty")
+        else:
+            problems.append("'output_device' must be an integer, string, or null")
+
+    tts_enabled = merged["tts_enabled"]
+    if not isinstance(tts_enabled, bool):
+        problems.append("'tts_enabled' must be a boolean")
+
+    tts_provider = _validate_string(merged, "tts_provider", problems).casefold()
+    if tts_provider not in SUPPORTED_TTS_VOICES:
+        problems.append("'tts_provider' must be one of: kokoro, piper")
+
+    tts_voice = _validate_string(merged, "tts_voice", problems)
+    if tts_provider in SUPPORTED_TTS_VOICES and tts_voice not in SUPPORTED_TTS_VOICES[tts_provider]:
+        choices = ", ".join(sorted(SUPPORTED_TTS_VOICES[tts_provider]))
+        problems.append(f"'tts_voice' must be one of the configured {tts_provider} voices: {choices}")
+
+    tts_speed = merged["tts_speed"]
+    if not _is_finite_number(tts_speed) or not 0.5 <= tts_speed <= 2.0:
+        problems.append("'tts_speed' must be a number from 0.5 to 2.0")
+
+    tts_language = _validate_string(merged, "tts_language", problems).casefold()
+    if tts_language != "en":
+        problems.append("'tts_language' must be 'en' in Phase 2C2")
+
     if problems:
         raise ConfigValidationError(source_path, problems)
 
@@ -308,6 +363,12 @@ def parse_config(
         stt_timeout_seconds=float(stt_timeout_seconds),
         stt_use_gpu=stt_use_gpu,
         retain_recordings=retain_recordings,
+        output_device=output_device.strip() if isinstance(output_device, str) else output_device,
+        tts_enabled=tts_enabled,
+        tts_provider=tts_provider,
+        tts_voice=tts_voice,
+        tts_speed=float(tts_speed),
+        tts_language=tts_language,
     )
     return ConfigLoadResult(config, source_path, tuple(migrations), tuple(unknown))
 

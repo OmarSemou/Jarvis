@@ -126,6 +126,10 @@ def test_phase2a_model_and_thinking_defaults():
     assert config.stt_use_gpu is False
     assert config.retain_recordings is False
     assert config.stt_model == "base"
+    assert config.tts_enabled is False
+    assert config.tts_provider == "kokoro"
+    assert config.tts_voice == "am_michael"
+    assert config.tts_speed == 1.0
 
 
 def test_phase2a_configuration_is_parsed():
@@ -168,6 +172,43 @@ def test_phase2c1_configuration_is_parsed():
     assert result.config.stt_timeout_seconds == 45.0
     assert result.config.stt_use_gpu is False
     assert result.config.retain_recordings is True
+
+
+def test_phase2c2_tts_configuration_is_parsed_and_voice_can_be_off():
+    result = parse_config(
+        {
+            "output_device": "USB Speakers",
+            "tts_enabled": False,
+            "tts_provider": "PIPER",
+            "tts_voice": "en_US-john-medium",
+            "tts_speed": 1.2,
+            "tts_language": "EN",
+        }
+    )
+
+    assert result.config.output_device == "USB Speakers"
+    assert result.config.tts_enabled is False
+    assert result.config.tts_provider == "piper"
+    assert result.config.tts_voice == "en_US-john-medium"
+    assert result.config.tts_speed == 1.2
+    assert result.config.tts_language == "en"
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ({"tts_enabled": 1}, "'tts_enabled' must be a boolean"),
+        ({"tts_provider": "cloud"}, "must be one of: kokoro, piper"),
+        ({"tts_provider": "kokoro", "tts_voice": "arbitrary"}, "configured kokoro voices"),
+        ({"tts_provider": "piper", "tts_voice": "am_michael"}, "configured piper voices"),
+        ({"tts_speed": 0.1}, "must be a number from 0.5 to 2.0"),
+        ({"tts_language": "da"}, "must be 'en'"),
+        ({"output_device": -1}, "integer must be non-negative"),
+    ],
+)
+def test_invalid_phase2c2_configuration_is_rejected(raw, message):
+    with pytest.raises(ConfigValidationError, match=message):
+        parse_config(raw)
 
 
 @pytest.mark.parametrize(

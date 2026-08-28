@@ -1,6 +1,7 @@
 from jarvis.core.paths import JarvisPaths
 from jarvis.core.config import JarvisConfig
 from jarvis.audio.devices import AudioDevice, MicrophoneStatus
+from jarvis.audio.tts.playback import OutputDevice, SpeakerStatus
 from jarvis.core.preflight import (
     CheckStatus,
     RequirementLevel,
@@ -35,20 +36,17 @@ def test_preflight_passes_required_checks_without_future_components(tmp_path):
     assert report.required_ok
     assert before == after
     assert _by_name(report, "Whisper.cpp").status is CheckStatus.MISSING
-    assert _by_name(report, "Piper").level is RequirementLevel.FUTURE
+    assert _by_name(report, "Piper package").level is RequirementLevel.CURRENT
     assert _by_name(report, "sounddevice").status is CheckStatus.MISSING
     assert _by_name(report, "Microphone").status is CheckStatus.NOT_CHECKED
     assert _by_name(report, "Camera support").status is CheckStatus.MISSING
 
 
-def test_preflight_recognizes_windows_bundled_executables(tmp_path):
+def test_preflight_recognizes_windows_bundled_whisper_executable(tmp_path):
     paths = _repository(tmp_path)
     whisper = paths.whisper_executable_candidates[0]
-    piper = paths.piper_executable_candidates[0]
     whisper.parent.mkdir(parents=True)
-    piper.parent.mkdir(parents=True)
     whisper.write_text("", encoding="utf-8")
-    piper.write_text("", encoding="utf-8")
 
     report = run_preflight(
         paths,
@@ -59,7 +57,7 @@ def test_preflight_recognizes_windows_bundled_executables(tmp_path):
     )
 
     assert _by_name(report, "Whisper.cpp").path == whisper
-    assert _by_name(report, "Piper").path == piper
+    assert _by_name(report, "Piper package").status is CheckStatus.MISSING
     assert _by_name(report, "Ollama").status is CheckStatus.AVAILABLE
 
 
@@ -104,7 +102,7 @@ def test_report_is_understandable_and_labels_future_items(tmp_path):
     )
 
     rendered = format_report(report)
-    assert "Jarvis Phase 2C1.1 preflight (read-only)" in rendered
+    assert "Jarvis Phase 2C2 preflight (read-only)" in rendered
     assert "future/optional" in rendered
     assert "Required checks: PASS" in rendered
 
@@ -128,6 +126,14 @@ def test_preflight_reports_configured_whisper_model_and_microphone_without_openi
             "configured input",
         )
 
+    def speaker_probe(configured):
+        return SpeakerStatus(
+            True,
+            OutputDevice(7, "USB Speakers", 2, 48_000, True),
+            configured,
+            "default output",
+        )
+
     report = run_preflight(
         paths,
         which=lambda _name: None,
@@ -135,6 +141,7 @@ def test_preflight_reports_configured_whisper_model_and_microphone_without_openi
         version_info=(3, 13, 15),
         platform_name="win32",
         microphone_probe=probe,
+        speaker_probe=speaker_probe,
         config=JarvisConfig(
             input_device=4,
             whisper_executable_path="private/whisper-cli.exe",
@@ -149,3 +156,32 @@ def test_preflight_reports_configured_whisper_model_and_microphone_without_openi
     assert _by_name(report, "Whisper model (small)").status is CheckStatus.MISSING
     assert _by_name(report, "sounddevice").status is CheckStatus.AVAILABLE
     assert _by_name(report, "Microphone").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "Speaker").status is CheckStatus.AVAILABLE
+    assert "no sound played" in _by_name(report, "Speaker").detail
+
+
+def test_preflight_reports_tts_packages_assets_and_selected_voice_without_synthesis(tmp_path):
+    paths = _repository(tmp_path)
+    paths.kokoro_model.parent.mkdir(parents=True)
+    paths.kokoro_model.write_bytes(b"model")
+    paths.kokoro_voices.write_bytes(b"voices")
+    model, voice_config = paths.piper_voice_files("en_US-john-medium")
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"model")
+    voice_config.write_text("{}", encoding="utf-8")
+
+    report = run_preflight(
+        paths,
+        which=lambda _name: None,
+        module_available=lambda name: name in {"kokoro_onnx", "piper"},
+        version_info=(3, 13, 15),
+        config=JarvisConfig(tts_provider="piper", tts_voice="en_US-john-medium"),
+    )
+
+    assert _by_name(report, "kokoro-onnx").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "Piper package").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "Kokoro model").status is CheckStatus.AVAILABLE
+    selected = _by_name(report, "Piper en_US-john-medium model")
+    assert selected.status is CheckStatus.AVAILABLE
+    assert "selected" in selected.detail
+    assert _by_name(report, "Speaker").status is CheckStatus.NOT_CHECKED

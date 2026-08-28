@@ -1,6 +1,8 @@
 import ast
 from pathlib import Path
 
+from jarvis.tools.registry import RobotToolRegistry
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SECURITY_FILES = (
@@ -42,3 +44,16 @@ def test_ollama_adapter_never_parses_tool_calls_from_assistant_text():
     assert "literal_eval" not in source
     assert "response.text" not in source
     assert '_field(message, "tool_calls"' in source
+
+
+def test_llm_tool_registry_cannot_change_tts_or_speaker_configuration():
+    names = {definition.name for definition in RobotToolRegistry().definitions}
+    forbidden = {
+        "set_voice",
+        "set_tts_provider",
+        "enable_tts",
+        "disable_tts",
+        "set_speaker",
+        "play_audio",
+    }
+    assert names.isdisjoint(forbidden)

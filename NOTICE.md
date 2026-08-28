@@ -46,3 +46,40 @@ downloaded files remain beneath ignored `data/` runtime storage.
 
 - Engine: https://github.com/ggml-org/whisper.cpp
 - Model repository: https://huggingface.co/ggerganov/whisper.cpp
+
+## Phase 2C2 local speech synthesis
+
+The setup script downloads these components into ignored runtime storage; this
+repository does not redistribute their model or voice files:
+
+- **kokoro-onnx 0.6.1** is an MIT-licensed Python/ONNX wrapper maintained by
+  thewh1teagle. The pinned stable wrapper model release is
+  `model-files-v1.0`.
+  Source: https://github.com/thewh1teagle/kokoro-onnx
+- The wrapper's installed dependency chain includes **phonemizer 3.4.0**, which
+  declares GPL-3.0. This is another distribution consideration distinct from
+  the wrapper's own MIT license.
+  Source: https://github.com/bootphon/phonemizer
+- **Kokoro-82M** is licensed Apache-2.0 by its model publisher, Hexgrad. The
+  Phase 2C2 benchmark uses the pinned wrapper model and bundle with the current
+  official voice identifiers `am_fenrir`, `am_michael`, `am_puck`, and
+  `bm_george`.
+  Source: https://huggingface.co/hexgrad/Kokoro-82M
+- **Open Home Foundation Piper 1.7.0** is GPL-3.0-or-later. That license is
+  materially different from Jarvis's MIT license and must be reviewed before
+  distributing or commercializing a combined application.
+  Source: https://github.com/OHF-Voice/piper1-gpl
+- **en_US-joe-medium** is pinned from the official Piper voice repository at
+  tag `v1.0.0`; its model card identifies a CC0 source dataset.
+  Source: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/joe/medium/MODEL_CARD
+- **en_US-john-medium** is pinned from the same immutable tag; its model card
+  describes a US male voice trained from public-domain LibriVox recordings.
+  Source: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/john/medium/MODEL_CARD
+
+Engine, model, and voice/dataset licensing are documented separately and must
+not be treated as interchangeable. The Kokoro bundle exposes official voice
+identifiers, but sufficiently detailed per-voice training-data provenance and
+redistribution terms are not established here. Piper model cards document
+dataset provenance, but downstream distribution implications still require
+review. Generated benchmark WAVs are local evaluation artifacts, not assets
+approved for redistribution.

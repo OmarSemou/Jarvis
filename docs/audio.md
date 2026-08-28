@@ -1,9 +1,10 @@
-# Phase 2C1.1 local hearing and benchmarking
+# Phase 2C2 local hearing, speech, and benchmarking
 
 Jarvis currently hears only after an explicit developer command. `/talk`
 starts one microphone recording, Enter stops it, and local `whisper.cpp`
 transcribes it. There is no wake word, VAD, always-listening loop, global
-hotkey, TTS, or cloud speech service.
+hotkey or cloud speech service. When explicitly enabled, Jarvis speaks each
+completed response through a fully local provider and the selected speaker.
 
 ## Windows setup
 
@@ -110,3 +111,94 @@ Missing dependencies, devices, executable/model files, empty recordings,
 timeouts, non-zero Whisper exits, and empty transcripts return concise CLI
 errors without entering the conversation service. Whisper temporary output is
 cleaned in all normal error paths. Startup never downloads or runs Whisper.
+
+## Local TTS architecture
+
+```text
+ConversationService response text
+  -> CLI/application coordinator
+  -> TTSService
+  -> allowlisted TTSProvider
+  -> provider-neutral PCM16 SynthesizedAudio
+  -> AudioPlaybackService
+  -> selected sounddevice RawOutputStream
+```
+
+`ConversationService` does not import TTS, Kokoro, Piper, or sounddevice. The
+CLI prints the complete response before synthesis begins, then performs one
+synchronous synthesize/play operation. There is no streaming, sentence
+chunking, playback thread, interruption, or barge-in in Phase 2C2. The playback
+interface nevertheless has an idempotent `stop`/`cancel` boundary for later use.
+
+Normal response audio never touches disk. Both adapters return interleaved
+signed little-endian PCM16 plus sample rate and channel count. Kokoro float
+samples are clipped and converted deterministically; Piper's PCM16 chunks are
+validated for a consistent format before concatenation. Playback accepts mono
+or stereo and closes the stream on success or failure.
+
+## TTS setup and versions
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_tts_windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/setup_tts_windows.ps1 -Providers kokoro
+powershell -ExecutionPolicy Bypass -File scripts/setup_tts_windows.ps1 -Providers piper
+```
+
+The script pins `kokoro-onnx==0.6.1`, its stable `model-files-v1.0` float32 CPU
+model and voice bundle, and `piper-tts==1.7.0` from the maintained Open Home
+Foundation project. Piper voices are pinned to the immutable official voice
+repository tag `v1.0.0`. Every one of the six model/config assets has a fixed
+SHA-256 in the script. Existing valid files are reused; mismatches stop setup
+unless the developer explicitly supplies `-Force`. Files live beneath ignored
+`data/models/tts/`; startup has no download or install path.
+
+The direct packages do not require Torch or Transformers. Kokoro's wrapper
+depends on ONNX Runtime, NumPy, phonemizer, and its eSpeak-NG loader. Piper's
+runtime depends on ONNX Runtime and pathvalidate. Phonemizer declares GPL-3.0,
+so it is documented separately from the MIT Kokoro wrapper in `NOTICE.md`.
+Phase 2C2 uses CPU inference.
+
+## Voice and speaker controls
+
+```text
+/voice status
+/voice on | /voice off
+/voice provider kokoro | /voice provider piper
+/voice use <allowlisted voice>
+/speaker list | /speaker status
+/speaker use <index or unique name>
+```
+
+The curated Kokoro candidates are `am_fenrir`, `am_michael`, `am_puck`, and
+`bm_george`. Piper candidates are `en_US-joe-medium` and
+`en_US-john-medium`. Provider switching selects a conservative provider-local
+candidate, after which `/voice use` can refine it. These settings are
+session-only unless supplied in validated configuration. An unavailable
+package, model, voice, output, or synthesis/playback failure produces a concise
+message while keeping the assistant text visible.
+
+Phase 2C2 accepts English only. The official Piper catalog has Danish voices,
+so the language boundary can support Danish later; the official Kokoro voice
+set currently has no Danish voice. No Danish TTS model is installed here.
+
+## TTS benchmark and retention
+
+```powershell
+.\.venv\Scripts\python.exe -m jarvis tts-benchmark
+.\.venv\Scripts\python.exe -m jarvis tts-benchmark-clean "<run-directory>"
+```
+
+The benchmark constructs only the TTS adapters. It makes no LLM, STT, network,
+microphone, or playback calls. It generates eight fixed phrases for all six
+voices and writes labeled WAVs beneath one timestamped ignored directory. Each
+row reports synthesis wall time, speech duration, real-time factor, sample
+rate, first usable audio when the provider API exposes it, and output file.
+Summaries report median/mean synthesis time, median RTF, fastest/slowest, and
+short-utterance median.
+
+For Kokoro's non-streaming API, “first usable audio” is the completed array and
+therefore approximately equals total synthesis time. Piper yields chunks, so
+the adapter records the first chunk. Neither provider is streamed to speakers
+in this phase. Timings cannot decide voice quality; a human must listen for
+tone, clarity, and pronunciation. Samples are retained deliberately until the
+explicit guarded cleanup command removes one direct benchmark-run directory.

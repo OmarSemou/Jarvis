@@ -94,6 +94,29 @@ class JarvisPaths:
         return self.data_dir / "models"
 
     @property
+    def tts_models_dir(self) -> Path:
+        return self.local_models_dir / "tts"
+
+    @property
+    def kokoro_model(self) -> Path:
+        return self.tts_models_dir / "kokoro" / "kokoro-v1.0.onnx"
+
+    @property
+    def kokoro_voices(self) -> Path:
+        return self.tts_models_dir / "kokoro" / "voices-v1.0.bin"
+
+    def piper_voice_files(self, voice: str) -> tuple[Path, Path]:
+        supported = {"en_US-joe-medium", "en_US-john-medium"}
+        if voice not in supported:
+            raise ValueError("Piper voice must be one of: en_US-joe-medium, en_US-john-medium")
+        model = self.tts_models_dir / "piper" / f"{voice}.onnx"
+        return model, model.with_suffix(".onnx.json")
+
+    @property
+    def tts_benchmark_dir(self) -> Path:
+        return self.data_dir / "benchmarks" / "tts"
+
+    @property
     def camera_image_file(self) -> Path:
         return self.data_dir / "current_image.jpg"
 

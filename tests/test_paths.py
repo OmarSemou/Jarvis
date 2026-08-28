@@ -22,6 +22,10 @@ def test_paths_do_not_depend_on_current_working_directory(tmp_path, monkeypatch)
     assert paths.whisper_model_for("base") == root.resolve() / "data" / "models" / "whisper" / "ggml-base.bin"
     assert paths.whisper_model_for("SMALL") == paths.whisper_model
     assert paths.resolve_from_root("models/test.bin") == root.resolve() / "models" / "test.bin"
+    assert paths.kokoro_model == root.resolve() / "data" / "models" / "tts" / "kokoro" / "kokoro-v1.0.onnx"
+    assert paths.kokoro_voices.name == "voices-v1.0.bin"
+    assert paths.piper_voice_files("en_US-joe-medium")[1].name == "en_US-joe-medium.onnx.json"
+    assert paths.tts_benchmark_dir == root.resolve() / "data" / "benchmarks" / "tts"
 
 
 def test_repository_root_must_be_explicitly_absolute():
@@ -34,6 +38,9 @@ def test_whisper_model_paths_are_allowlisted(tmp_path):
 
     with pytest.raises(ValueError, match="base, small"):
         paths.whisper_model_for("../../arbitrary")
+
+    with pytest.raises(ValueError, match="Piper voice"):
+        paths.piper_voice_files("../../arbitrary")
 
 
 def test_constructing_paths_does_not_create_runtime_directory(tmp_path):

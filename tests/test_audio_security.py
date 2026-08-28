@@ -40,6 +40,29 @@ def test_conversation_service_has_no_audio_or_whisper_dependency():
     assert not any("whisper" in name for name in imports)
 
 
+def test_conversation_service_has_no_tts_provider_or_playback_dependency():
+    source = (ROOT / "jarvis" / "core" / "conversation.py").read_text(encoding="utf-8")
+    assert "kokoro" not in source.casefold()
+    assert "piper" not in source.casefold()
+    assert "sounddevice" not in source.casefold()
+    assert "playback" not in source.casefold()
+
+
+def test_tts_setup_is_pinned_hash_verified_and_avoids_disallowed_frameworks():
+    script = (ROOT / "scripts" / "setup_tts_windows.ps1").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "kokoro-onnx==0.6.1" in script
+    assert "piper-tts==1.7.0" in script
+    assert "model-files-v1.0" in script
+    assert "resolve/v1.0.0" in script
+    assert script.count("Install-VerifiedAsset") >= 7
+    assert "Get-FileHash -Algorithm SHA256" in script
+    assert "SetEnvironmentVariable" not in script
+    combined = (script + requirements).casefold()
+    for forbidden in ("torch", "transformers", "langchain", "langgraph", "opencv", "openwakeword"):
+        assert forbidden not in combined
+
+
 def test_benchmark_module_has_no_llm_network_or_download_dependency():
     tree = ast.parse((ROOT / "jarvis" / "audio" / "benchmark.py").read_text(encoding="utf-8"))
     imports = set()

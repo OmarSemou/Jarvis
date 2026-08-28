@@ -6,6 +6,7 @@ import argparse
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 
 from jarvis.audio.benchmark import (
@@ -30,6 +31,21 @@ from jarvis.audio.stt.whisper_cpp import (
     WhisperCppSTT,
     WhisperCppSettings,
 )
+from jarvis.audio.tts.benchmark import (
+    cleanup_tts_benchmark,
+    format_tts_benchmark_report,
+    run_tts_benchmark,
+)
+from jarvis.audio.tts.base import TTSProvider
+from jarvis.audio.tts.kokoro import KokoroSettings, KokoroTTS
+from jarvis.audio.tts.piper import PiperSettings, PiperTTS
+from jarvis.audio.tts.playback import (
+    AudioPlaybackService,
+    SpeakerError,
+    format_speaker_list,
+    format_speaker_status,
+)
+from jarvis.audio.tts.service import TTSService
 from jarvis.core.config import ConfigValidationError, JarvisConfig, load_for_paths
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.core.paths import JarvisPaths
@@ -76,6 +92,36 @@ def create_voice_runtime(
         recorder,
         stt,
         retain_recordings=config.retain_recordings,
+    )
+
+
+def create_tts_providers(config: JarvisConfig, paths: JarvisPaths) -> dict[str, TTSProvider]:
+    del config
+    piper_files = {
+        voice: paths.piper_voice_files(voice)
+        for voice in ("en_US-joe-medium", "en_US-john-medium")
+    }
+    return {
+        "kokoro": KokoroTTS(
+            KokoroSettings(paths.kokoro_model.resolve(), paths.kokoro_voices.resolve())
+        ),
+        "piper": PiperTTS(PiperSettings(piper_files)),
+    }
+
+
+def create_tts_runtime(
+    config: JarvisConfig,
+    paths: JarvisPaths | None = None,
+) -> TTSService:
+    paths = paths or JarvisPaths.discover()
+    return TTSService(
+        create_tts_providers(config, paths),
+        AudioPlaybackService(config.output_device),
+        enabled=config.tts_enabled,
+        provider=config.tts_provider,
+        voice=config.tts_voice,
+        speed=config.tts_speed,
+        language=config.tts_language,
     )
 
 
@@ -250,6 +296,7 @@ def _respond(
     service: ConversationService,
     user_text: str,
     output_fn: OutputFunction,
+    tts_runtime: TTSService | None = None,
 ) -> int | None:
     try:
         response = service.respond(user_text)
@@ -260,6 +307,23 @@ def _respond(
         output_fn(f"Error: {exc}")
         return None
     output_fn(f"Jarvis > {response.text}")
+    if tts_runtime is not None and tts_runtime.enabled:
+        speech = tts_runtime.speak(response.text)
+        if speech.success:
+            synthesis = speech.synthesis
+            duration = synthesis.speech_duration_seconds
+            rtf = synthesis.real_time_factor
+            output_fn(
+                f"[TTS] {synthesis.provider}/{synthesis.voice} "
+                f"synthesis={synthesis.elapsed_seconds:.2f}s "
+                f"speech={duration:.2f}s RTF={rtf:.2f}"
+            )
+        else:
+            output_fn(
+                "Voice output error: "
+                f"{speech.error_message or 'unknown local speech failure'} "
+                "Text response remains available."
+            )
     return None
 
 
@@ -268,6 +332,7 @@ def run_chat(
     *,
     robot_controller: SafeRobotController | None = None,
     voice_runtime: VoiceInputService | None = None,
+    tts_runtime: TTSService | None = None,
     input_fn: InputFunction = input,
     output_fn: OutputFunction = print,
 ) -> int:
@@ -275,10 +340,22 @@ def run_chat(
     output_fn("Jarvis Local")
     output_fn(f"Model: {status.model}")
     output_fn(f"Thinking: {'on' if status.thinking else 'off'}")
+    if voice_runtime is not None:
+        stt_provider = getattr(voice_runtime, "stt", None)
+        stt_settings = getattr(stt_provider, "settings", None)
+        stt_model = getattr(stt_settings, "model_name", "configured")
+        stt_name = getattr(stt_provider, "name", "local")
+        output_fn(f"STT: {stt_name} / {stt_model}")
+    if tts_runtime is None or not tts_runtime.enabled:
+        output_fn("Voice: off")
+    else:
+        output_fn(f"Voice: {tts_runtime.provider} / {tts_runtime.voice}")
     output_fn(
         "Commands: /status, /reset, /think on, /think off, "
         "/robot status, /robot estop, /robot estop-reset, "
-        "/talk, /stt status, /mic list, /mic status, /mic use <device>, /quit"
+        "/talk, /stt status, /mic list, /mic status, /mic use <device>, "
+        "/voice status|on|off, /voice provider <name>, /voice use <voice>, "
+        "/speaker list|status|use <device>, /quit"
     )
 
     while True:
@@ -361,9 +438,99 @@ def run_chat(
             if transcription is None:
                 continue
             output_fn(f"You (voice) > {transcription.text}")
-            interrupted = _respond(service, transcription.text, output_fn)
+            interrupted = _respond(service, transcription.text, output_fn, tts_runtime)
             if interrupted is not None:
                 return interrupted
+            continue
+        if command == "/voice status":
+            if tts_runtime is None:
+                output_fn("Voice output unavailable.")
+            else:
+                voice_status = tts_runtime.status()
+                output_fn(
+                    f"Voice output: {'on' if voice_status.enabled else 'off'}\n"
+                    f"Provider: {voice_status.provider}\n"
+                    f"Voice: {voice_status.voice}\n"
+                    f"Speed: {voice_status.speed:g}\n"
+                    f"Language: {voice_status.language}\n"
+                    f"Ready: {'yes' if voice_status.ready else 'no'}\n"
+                    f"Detail: {voice_status.detail}"
+                )
+            continue
+        if command in {"/voice on", "/voice off"}:
+            if tts_runtime is None:
+                output_fn("Voice output unavailable.")
+            else:
+                tts_runtime.set_enabled(command.endswith("on"))
+                output_fn(f"Voice output {'on' if tts_runtime.enabled else 'off'}.")
+            continue
+        if command == "/voice provider" or command.startswith("/voice provider "):
+            if tts_runtime is None:
+                output_fn("Voice output unavailable.")
+                continue
+            requested = user_text[len("/voice provider") :].strip()
+            if not requested:
+                output_fn("Usage: /voice provider <kokoro or piper>")
+                continue
+            try:
+                tts_runtime.set_provider(requested)
+            except ValueError as exc:
+                output_fn(f"Voice configuration error: {exc}")
+            else:
+                output_fn(
+                    f"Voice provider selected for this session: "
+                    f"{tts_runtime.provider} / {tts_runtime.voice}"
+                )
+            continue
+        if command == "/voice use" or command.startswith("/voice use "):
+            if tts_runtime is None:
+                output_fn("Voice output unavailable.")
+                continue
+            requested = user_text[len("/voice use") :].strip()
+            if not requested:
+                output_fn("Usage: /voice use <allowlisted voice>")
+                continue
+            try:
+                tts_runtime.set_voice(requested)
+            except ValueError as exc:
+                output_fn(f"Voice configuration error: {exc}")
+            else:
+                output_fn(f"Voice selected for this session: {tts_runtime.voice}")
+            continue
+        if command == "/speaker list":
+            if tts_runtime is None:
+                output_fn("Voice output unavailable.")
+            else:
+                try:
+                    output_fn(format_speaker_list(tts_runtime.playback.list_outputs()))
+                except SpeakerError as exc:
+                    output_fn(f"Speaker error: {exc}")
+            continue
+        if command == "/speaker status":
+            if tts_runtime is None:
+                output_fn("Voice output unavailable.")
+            else:
+                output_fn(format_speaker_status(tts_runtime.playback.status()))
+            continue
+        if command == "/speaker use" or command.startswith("/speaker use "):
+            if tts_runtime is None:
+                output_fn("Voice output unavailable.")
+                continue
+            requested = user_text[len("/speaker use") :].strip()
+            if not requested:
+                output_fn("Usage: /speaker use <device index or unique name>")
+                continue
+            previous = tts_runtime.playback.configured_device
+            tts_runtime.playback.configured_device = _parse_microphone_selector(requested)
+            selected_status = tts_runtime.playback.status()
+            if not selected_status.available:
+                tts_runtime.playback.configured_device = previous
+                output_fn(f"Speaker error: {selected_status.detail}")
+            else:
+                selected = selected_status.selected
+                output_fn(
+                    f"Speaker selected for this session: {selected.index}: {selected.name}"
+                )
             continue
         if command == "/robot status":
             if robot_controller is None:
@@ -394,7 +561,7 @@ def run_chat(
             output_fn("Unknown command. Use /status for the command list.")
             continue
 
-        interrupted = _respond(service, user_text, output_fn)
+        interrupted = _respond(service, user_text, output_fn, tts_runtime)
         if interrupted is not None:
             return interrupted
 
@@ -409,6 +576,7 @@ def chat_command(output_fn: OutputFunction = print) -> int:
         config = load_for_paths(paths).config
         runtime = create_robot_runtime(output_fn=output_fn)
         voice = create_voice_runtime(config, paths)
+        tts = create_tts_runtime(config, paths)
         service = create_conversation(config, tool_executor=runtime.tools)
     except (ConfigValidationError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
@@ -418,6 +586,7 @@ def chat_command(output_fn: OutputFunction = print) -> int:
             service,
             robot_controller=runtime.controller,
             voice_runtime=voice,
+            tts_runtime=tts,
             output_fn=output_fn,
         )
     finally:
@@ -588,6 +757,59 @@ def stt_benchmark_command(
                 output_fn(f"Privacy warning: {warning}")
 
 
+def tts_benchmark_command(
+    *,
+    output_fn: OutputFunction = print,
+    paths: JarvisPaths | None = None,
+    config: JarvisConfig | None = None,
+    providers: dict[str, TTSProvider] | None = None,
+) -> int:
+    """Synthesize the fixed English corpus without constructing LLM or STT services."""
+
+    try:
+        paths = paths or JarvisPaths.discover()
+        config = config or load_for_paths(paths).config
+        providers = providers or create_tts_providers(config, paths)
+        for provider in providers.values():
+            for voice in provider.available_voices:
+                failure = provider.readiness_error(voice)
+                if failure is not None:
+                    output_fn(
+                        f"TTS benchmark unavailable for {provider.name}/{voice}: "
+                        f"{failure.message}"
+                    )
+                    return 1
+        output_fn("Jarvis local TTS benchmark (no LLM, STT, playback, or network calls)")
+        report = run_tts_benchmark(providers, paths.tts_benchmark_dir)
+        output_fn(format_tts_benchmark_report(report))
+        return 0 if report.successful else 1
+    except (ConfigValidationError, ValueError) as exc:
+        output_fn(f"Configuration error: {exc}")
+        return 2
+    except Exception as exc:
+        output_fn(f"TTS benchmark failed safely: {exc}")
+        return 1
+
+
+def tts_benchmark_clean_command(
+    run_directory: str,
+    *,
+    output_fn: OutputFunction = print,
+    paths: JarvisPaths | None = None,
+) -> int:
+    try:
+        paths = paths or JarvisPaths.discover()
+        target = Path(run_directory)
+        if not target.is_absolute():
+            target = paths.tts_benchmark_dir / target
+        cleanup_tts_benchmark(target, paths.tts_benchmark_dir)
+        output_fn(f"Removed TTS benchmark samples: {target.resolve()}")
+        return 0
+    except (OSError, ValueError) as exc:
+        output_fn(f"TTS benchmark cleanup refused: {exc}")
+        return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m jarvis", description="Jarvis local developer commands")
     subparsers = parser.add_subparsers(dest="command")
@@ -610,6 +832,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DEVICE",
         help="session-only microphone index or unique name",
     )
+    subparsers.add_parser(
+        "tts-benchmark",
+        help="synthesize the fixed local corpus for all curated voices without playback",
+    )
+    cleanup_parser = subparsers.add_parser(
+        "tts-benchmark-clean",
+        help="remove one explicit retained TTS benchmark run",
+    )
+    cleanup_parser.add_argument("run_directory", help="run directory name or full path")
     benchmark_parser.add_argument(
         "--retain-recordings",
         action="store_true",
@@ -632,6 +863,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             microphone=args.mic,
             retain_recordings=args.retain_recordings,
         )
+    if args.command == "tts-benchmark":
+        return tts_benchmark_command()
+    if args.command == "tts-benchmark-clean":
+        return tts_benchmark_clean_command(args.run_directory)
     parser.print_help()
     return 2
 
