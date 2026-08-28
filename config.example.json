@@ -7,5 +7,12 @@
   "system_prompt": "You are Jarvis, a helpful local personal companion. Keep responses concise and friendly.",
   "system_prompt_extras": "",
   "input_device": null,
-  "input_sample_rate": null
+  "input_sample_rate": null,
+  "llm_model": "qwen3:8b",
+  "llm_thinking": false,
+  "conversation_max_turns": 12,
+  "ollama_host": "http://127.0.0.1:11434",
+  "ollama_connect_timeout_seconds": 3.0,
+  "ollama_read_timeout_seconds": 120.0,
+  "ollama_keep_alive": "5m"
 }

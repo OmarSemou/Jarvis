@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import warnings
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -49,6 +50,13 @@ KNOWN_KEYS = frozenset(
         "system_prompt_extras",
         "input_device",
         "input_sample_rate",
+        "llm_model",
+        "llm_thinking",
+        "conversation_max_turns",
+        "ollama_host",
+        "ollama_connect_timeout_seconds",
+        "ollama_read_timeout_seconds",
+        "ollama_keep_alive",
     }
 )
 
@@ -66,6 +74,13 @@ class JarvisConfig:
     system_prompt_extras: str = ""
     input_device: int | str | None = None
     input_sample_rate: int | None = None
+    llm_model: str = "qwen3:8b"
+    llm_thinking: bool = False
+    conversation_max_turns: int = 12
+    ollama_host: str = "http://127.0.0.1:11434"
+    ollama_connect_timeout_seconds: float = 3.0
+    ollama_read_timeout_seconds: float = 120.0
+    ollama_keep_alive: str = "5m"
 
     def effective_system_prompt(self, fallback: str) -> str:
         """Return the configured prompt, then append optional extra guidance."""
@@ -87,6 +102,13 @@ class JarvisConfig:
             "system_prompt_extras": self.system_prompt_extras,
             "input_device": self.input_device,
             "input_sample_rate": self.input_sample_rate,
+            "llm_model": self.llm_model,
+            "llm_thinking": self.llm_thinking,
+            "conversation_max_turns": self.conversation_max_turns,
+            "ollama_host": self.ollama_host,
+            "ollama_connect_timeout_seconds": self.ollama_connect_timeout_seconds,
+            "ollama_read_timeout_seconds": self.ollama_read_timeout_seconds,
+            "ollama_keep_alive": self.ollama_keep_alive,
         }
 
 
@@ -100,6 +122,10 @@ class ConfigLoadResult:
 
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_finite_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _validate_string(values: Mapping[str, Any], key: str, problems: list[str]) -> str:
@@ -185,6 +211,28 @@ def parse_config(
     ):
         problems.append("'input_sample_rate' must be an integer from 8000 to 192000, or null")
 
+    llm_model = _validate_string(merged, "llm_model", problems)
+
+    llm_thinking = merged["llm_thinking"]
+    if not isinstance(llm_thinking, bool):
+        problems.append("'llm_thinking' must be a boolean")
+
+    conversation_max_turns = merged["conversation_max_turns"]
+    if not _is_int(conversation_max_turns) or not 1 <= conversation_max_turns <= 100:
+        problems.append("'conversation_max_turns' must be an integer from 1 to 100")
+
+    ollama_host = _validate_string(merged, "ollama_host", problems)
+
+    ollama_connect_timeout_seconds = merged["ollama_connect_timeout_seconds"]
+    if not _is_finite_number(ollama_connect_timeout_seconds) or not 0 < ollama_connect_timeout_seconds <= 60:
+        problems.append("'ollama_connect_timeout_seconds' must be a number greater than 0 and at most 60")
+
+    ollama_read_timeout_seconds = merged["ollama_read_timeout_seconds"]
+    if not _is_finite_number(ollama_read_timeout_seconds) or not 0 < ollama_read_timeout_seconds <= 600:
+        problems.append("'ollama_read_timeout_seconds' must be a number greater than 0 and at most 600")
+
+    ollama_keep_alive = _validate_string(merged, "ollama_keep_alive", problems)
+
     if problems:
         raise ConfigValidationError(source_path, problems)
 
@@ -198,6 +246,13 @@ def parse_config(
         system_prompt_extras=system_prompt_extras,
         input_device=input_device.strip() if isinstance(input_device, str) else input_device,
         input_sample_rate=input_sample_rate,
+        llm_model=llm_model,
+        llm_thinking=llm_thinking,
+        conversation_max_turns=conversation_max_turns,
+        ollama_host=ollama_host,
+        ollama_connect_timeout_seconds=float(ollama_connect_timeout_seconds),
+        ollama_read_timeout_seconds=float(ollama_read_timeout_seconds),
+        ollama_keep_alive=ollama_keep_alive,
     )
     return ConfigLoadResult(config, source_path, tuple(migrations), tuple(unknown))
 

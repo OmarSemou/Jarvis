@@ -112,3 +112,47 @@ def test_missing_config_uses_safe_defaults(tmp_path):
 
     assert result.source is None
     assert result.config == JarvisConfig()
+
+
+def test_phase2a_model_and_thinking_defaults():
+    config = JarvisConfig()
+
+    assert config.llm_model == "qwen3:8b"
+    assert config.llm_thinking is False
+    assert config.ollama_host == "http://127.0.0.1:11434"
+    assert config.conversation_max_turns == 12
+
+
+def test_phase2a_configuration_is_parsed():
+    result = parse_config(
+        {
+            "llm_model": "qwen3:14b",
+            "llm_thinking": True,
+            "conversation_max_turns": 4,
+            "ollama_host": "http://localhost:11434",
+            "ollama_connect_timeout_seconds": 2,
+            "ollama_read_timeout_seconds": 30.5,
+            "ollama_keep_alive": "10m",
+        }
+    )
+
+    assert result.config.llm_model == "qwen3:14b"
+    assert result.config.llm_thinking is True
+    assert result.config.conversation_max_turns == 4
+    assert result.config.ollama_connect_timeout_seconds == 2.0
+    assert result.config.ollama_read_timeout_seconds == 30.5
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ({"llm_thinking": 1}, "'llm_thinking' must be a boolean"),
+        ({"conversation_max_turns": 0}, "'conversation_max_turns' must be an integer"),
+        ({"ollama_connect_timeout_seconds": True}, "must be a number"),
+        ({"ollama_read_timeout_seconds": float("inf")}, "must be a number"),
+        ({"ollama_keep_alive": ""}, "must be a non-empty string"),
+    ],
+)
+def test_invalid_phase2a_configuration_is_rejected(raw, message):
+    with pytest.raises(ConfigValidationError, match=message):
+        parse_config(raw)

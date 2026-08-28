@@ -1,2 +1,1 @@
-"""Side-effect-free configuration, path, state, and diagnostic contracts."""
-
+"""Configuration, paths, state, diagnostics, and conversation orchestration."""
