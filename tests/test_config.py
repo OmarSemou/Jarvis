@@ -122,6 +122,10 @@ def test_phase2a_model_and_thinking_defaults():
     assert config.ollama_host == "http://127.0.0.1:11434"
     assert config.conversation_max_turns == 12
     assert config.conversation_max_tool_rounds == 3
+    assert config.stt_language == "auto"
+    assert config.stt_use_gpu is False
+    assert config.retain_recordings is False
+    assert config.whisper_model_path.endswith("ggml-small.bin")
 
 
 def test_phase2a_configuration_is_parsed():
@@ -146,6 +150,26 @@ def test_phase2a_configuration_is_parsed():
     assert result.config.ollama_read_timeout_seconds == 30.5
 
 
+def test_phase2c1_configuration_is_parsed():
+    result = parse_config(
+        {
+            "whisper_executable_path": "private/whisper-cli.exe",
+            "whisper_model_path": "private/ggml-small.bin",
+            "stt_language": "DA",
+            "stt_timeout_seconds": 45,
+            "stt_use_gpu": False,
+            "retain_recordings": True,
+        }
+    )
+
+    assert result.config.whisper_executable_path == "private/whisper-cli.exe"
+    assert result.config.whisper_model_path == "private/ggml-small.bin"
+    assert result.config.stt_language == "da"
+    assert result.config.stt_timeout_seconds == 45.0
+    assert result.config.stt_use_gpu is False
+    assert result.config.retain_recordings is True
+
+
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
@@ -155,6 +179,11 @@ def test_phase2a_configuration_is_parsed():
         ({"ollama_connect_timeout_seconds": True}, "must be a number"),
         ({"ollama_read_timeout_seconds": float("inf")}, "must be a number"),
         ({"ollama_keep_alive": ""}, "must be a non-empty string"),
+        ({"stt_language": "fr"}, "must be one of"),
+        ({"stt_timeout_seconds": 0}, "must be a number"),
+        ({"stt_use_gpu": "yes"}, "must be a boolean"),
+        ({"retain_recordings": 1}, "must be a boolean"),
+        ({"whisper_executable_path": ""}, "must be a non-empty string"),
     ],
 )
 def test_invalid_phase2a_configuration_is_rejected(raw, message):

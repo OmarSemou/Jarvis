@@ -28,7 +28,8 @@ piper/
 # !wakeword.onnx
 
 # --- User Configuration & Memory ---
-# Phase 1 keeps all private/runtime state beneath data/.
+# Private/runtime state, including recordings, STT output, downloaded tools,
+# and downloaded models, stays beneath data/.
 data/
 config.local.json
 

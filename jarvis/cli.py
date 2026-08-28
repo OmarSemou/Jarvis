@@ -1,4 +1,4 @@
-"""Developer CLI for local text conversation and the safe robot simulator."""
+"""Developer CLI for local text/voice input and the safe robot simulator."""
 
 from __future__ import annotations
 
@@ -8,6 +8,16 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from time import perf_counter
 
+from jarvis.audio.devices import (
+    MicrophoneDeviceService,
+    MicrophoneError,
+    format_device_list,
+    format_microphone_status,
+)
+from jarvis.audio.recorder import PushToTalkRecorder, RecordingError
+from jarvis.audio.service import VoiceInputError, VoiceInputService
+from jarvis.audio.stt.base import TranscriptionResult
+from jarvis.audio.stt.whisper_cpp import WhisperCppSTT, WhisperCppSettings
 from jarvis.core.config import ConfigValidationError, JarvisConfig, load_for_paths
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.core.paths import JarvisPaths
@@ -35,6 +45,35 @@ OutputFunction = Callable[[str], None]
 class RobotRuntime:
     controller: SafeRobotController
     tools: RobotToolPolicy
+
+
+def create_voice_runtime(
+    config: JarvisConfig,
+    paths: JarvisPaths | None = None,
+) -> VoiceInputService:
+    paths = paths or JarvisPaths.discover()
+    devices = MicrophoneDeviceService(config.input_device)
+    recorder = PushToTalkRecorder(
+        devices,
+        paths.recordings_dir,
+        preferred_sample_rate=config.input_sample_rate,
+    )
+    stt = WhisperCppSTT(
+        WhisperCppSettings(
+            executable_path=paths.resolve_from_root(config.whisper_executable_path),
+            model_path=paths.resolve_from_root(config.whisper_model_path),
+            temp_dir=paths.stt_temp_dir.resolve(),
+            language=config.stt_language,
+            timeout_seconds=config.stt_timeout_seconds,
+            use_gpu=config.stt_use_gpu,
+        )
+    )
+    return VoiceInputService(
+        devices,
+        recorder,
+        stt,
+        retain_recordings=config.retain_recordings,
+    )
 
 
 def create_robot_runtime(*, output_fn: OutputFunction | None = None) -> RobotRuntime:
@@ -101,10 +140,95 @@ def _format_robot_status(controller: SafeRobotController) -> str:
     )
 
 
+def _print_transcription_metrics(
+    result: TranscriptionResult,
+    output_fn: OutputFunction,
+) -> None:
+    duration = result.audio_duration_seconds
+    factor = result.real_time_factor
+    if duration is None:
+        output_fn(f"[STT] transcription={result.elapsed_seconds:.2f}s")
+        return
+    factor_text = f" RTF={factor:.2f}" if factor is not None else ""
+    output_fn(
+        f"[STT] audio={duration:.2f}s transcription={result.elapsed_seconds:.2f}s{factor_text}"
+    )
+
+
+def _parse_microphone_selector(value: str) -> int | str:
+    stripped = value.strip()
+    return int(stripped) if stripped.isdecimal() else stripped
+
+
+def _capture_voice(
+    voice: VoiceInputService,
+    *,
+    input_fn: InputFunction,
+    output_fn: OutputFunction,
+    wait_to_start: bool = False,
+) -> TranscriptionResult | None:
+    try:
+        if wait_to_start:
+            input_fn("Press Enter to begin recording...")
+        session = voice.start()
+        output_fn(
+            "Recording... press Enter to stop. "
+            f"[{session.device.name}, {session.capture_sample_rate} Hz capture]"
+        )
+        input_fn("")
+    except (EOFError, KeyboardInterrupt):
+        voice.cancel()
+        output_fn("Recording cancelled.")
+        return None
+    except (VoiceInputError, RecordingError) as exc:
+        voice.cancel()
+        output_fn(f"Voice input error: {exc}")
+        return None
+
+    output_fn("Transcribing locally...")
+    try:
+        outcome = voice.finish()
+    except RecordingError as exc:
+        output_fn(f"Voice input error: {exc}")
+        return None
+    except Exception as exc:
+        output_fn(f"Voice input error: transcription failed safely: {exc}")
+        return None
+    if outcome.cleanup_warning:
+        output_fn(f"Privacy warning: {outcome.cleanup_warning}")
+    if outcome.retained_recording is not None:
+        output_fn(f"Recording retained: {outcome.retained_recording}")
+    result = outcome.transcription
+    _print_transcription_metrics(result, output_fn)
+    if not result.success:
+        message = result.error.message if result.error is not None else "Unknown transcription failure."
+        output_fn(f"Voice input error: {message}")
+        return None
+    return result
+
+
+def _respond(
+    service: ConversationService,
+    user_text: str,
+    output_fn: OutputFunction,
+) -> int | None:
+    try:
+        response = service.respond(user_text)
+    except LLMInterruptedError as exc:
+        output_fn(f"Request interrupted: {exc}")
+        return 130
+    except LLMError as exc:
+        output_fn(f"Error: {exc}")
+        return None
+    output_fn(f"Jarvis > {response.text}")
+    return None
+
+
 def run_chat(
     service: ConversationService,
     *,
     robot_controller: SafeRobotController | None = None,
+    voice_runtime: VoiceInputService | None = None,
     input_fn: InputFunction = input,
     output_fn: OutputFunction = print,
 ) -> int:
@@ -114,7 +238,8 @@ def run_chat(
     output_fn(f"Thinking: {'on' if status.thinking else 'off'}")
     output_fn(
         "Commands: /status, /reset, /think on, /think off, "
-        "/robot status, /robot estop, /robot estop-reset, /quit"
+        "/robot status, /robot estop, /robot estop-reset, "
+        "/talk, /mic list, /mic status, /mic use <device>, /quit"
     )
 
     while True:
@@ -143,6 +268,57 @@ def run_chat(
         if command in {"/think on", "/think off"}:
             service.set_thinking(command.endswith("on"))
             output_fn(f"Thinking {'on' if service.thinking else 'off'}.")
+            continue
+        if command == "/mic list":
+            if voice_runtime is None:
+                output_fn("Voice input unavailable.")
+            else:
+                try:
+                    output_fn(format_device_list(voice_runtime.devices.list_inputs()))
+                except MicrophoneError as exc:
+                    output_fn(f"Microphone error: {exc}")
+            continue
+        if command == "/mic status":
+            if voice_runtime is None:
+                output_fn("Voice input unavailable.")
+            else:
+                output_fn(format_microphone_status(voice_runtime.devices.status()))
+            continue
+        if command == "/mic use" or command.startswith("/mic use "):
+            if voice_runtime is None:
+                output_fn("Voice input unavailable.")
+                continue
+            requested = user_text[len("/mic use") :].strip()
+            if not requested:
+                output_fn("Usage: /mic use <device index or unique name>")
+                continue
+            previous = voice_runtime.devices.configured_device
+            voice_runtime.devices.configured_device = _parse_microphone_selector(requested)
+            selected_status = voice_runtime.devices.status()
+            if not selected_status.available:
+                voice_runtime.devices.configured_device = previous
+                output_fn(f"Microphone error: {selected_status.detail}")
+            else:
+                selected = selected_status.selected
+                output_fn(
+                    f"Microphone selected for this session: {selected.index}: {selected.name}"
+                )
+            continue
+        if command == "/talk":
+            if voice_runtime is None:
+                output_fn("Voice input unavailable.")
+                continue
+            transcription = _capture_voice(
+                voice_runtime,
+                input_fn=input_fn,
+                output_fn=output_fn,
+            )
+            if transcription is None:
+                continue
+            output_fn(f"You (voice) > {transcription.text}")
+            interrupted = _respond(service, transcription.text, output_fn)
+            if interrupted is not None:
+                return interrupted
             continue
         if command == "/robot status":
             if robot_controller is None:
@@ -173,15 +349,9 @@ def run_chat(
             output_fn("Unknown command. Use /status for the command list.")
             continue
 
-        try:
-            response = service.respond(user_text)
-        except LLMInterruptedError as exc:
-            output_fn(f"Request interrupted: {exc}")
-            return 130
-        except LLMError as exc:
-            output_fn(f"Error: {exc}")
-            continue
-        output_fn(f"Jarvis > {response.text}")
+        interrupted = _respond(service, user_text, output_fn)
+        if interrupted is not None:
+            return interrupted
 
 
 def _load_runtime_config() -> JarvisConfig:
@@ -190,13 +360,21 @@ def _load_runtime_config() -> JarvisConfig:
 
 def chat_command(output_fn: OutputFunction = print) -> int:
     try:
+        paths = JarvisPaths.discover()
+        config = load_for_paths(paths).config
         runtime = create_robot_runtime(output_fn=output_fn)
-        service = create_conversation(_load_runtime_config(), tool_executor=runtime.tools)
+        voice = create_voice_runtime(config, paths)
+        service = create_conversation(config, tool_executor=runtime.tools)
     except (ConfigValidationError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
         return 2
     try:
-        return run_chat(service, robot_controller=runtime.controller, output_fn=output_fn)
+        return run_chat(
+            service,
+            robot_controller=runtime.controller,
+            voice_runtime=voice,
+            output_fn=output_fn,
+        )
     finally:
         service.close()
 
@@ -247,11 +425,50 @@ def llm_check_command(output_fn: OutputFunction = print) -> int:
         provider.close()
 
 
+def stt_check_command(
+    *,
+    microphone: str | None = None,
+    input_fn: InputFunction = input,
+    output_fn: OutputFunction = print,
+) -> int:
+    """Record and transcribe once without constructing or calling an LLM."""
+
+    try:
+        paths = JarvisPaths.discover()
+        config = load_for_paths(paths).config
+        voice = create_voice_runtime(config, paths)
+        if microphone is not None:
+            voice.devices.configured_device = _parse_microphone_selector(microphone)
+    except (ConfigValidationError, ValueError) as exc:
+        output_fn(f"Configuration error: {exc}")
+        return 2
+    output_fn("Jarvis local STT check (no LLM call)")
+    result = _capture_voice(
+        voice,
+        input_fn=input_fn,
+        output_fn=output_fn,
+        wait_to_start=True,
+    )
+    if result is None:
+        return 1
+    output_fn(f"Transcription: {result.text}")
+    output_fn("Local whisper.cpp integration: PASS")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m jarvis", description="Jarvis local developer commands")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("chat", help="start the local text conversation CLI")
     subparsers.add_parser("llm-check", help="explicitly test the configured local Ollama model")
+    stt_parser = subparsers.add_parser(
+        "stt-check", help="record and transcribe once without an LLM call"
+    )
+    stt_parser.add_argument(
+        "--mic",
+        metavar="DEVICE",
+        help="session-only microphone index or unique name",
+    )
     return parser
 
 
@@ -262,6 +479,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return chat_command()
     if args.command == "llm-check":
         return llm_check_command()
+    if args.command == "stt-check":
+        return stt_check_command(microphone=args.mic)
     parser.print_help()
     return 2
 

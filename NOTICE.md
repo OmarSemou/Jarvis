@@ -36,3 +36,13 @@ preserved while their terms are reviewed.
 These items require explicit review before public redistribution or commercial
 use. This notice documents the uncertainty; it does not claim to resolve it.
 
+## Phase 2C1 local speech recognition
+
+The explicit Windows setup script downloads, but this repository does not
+redistribute, the official `whisper.cpp` v1.9.1 CPU binary and the multilingual
+`ggml-small.bin` model from the upstream `ggerganov/whisper.cpp` model
+repository. The engine and upstream model repository are MIT licensed. Their
+downloaded files remain beneath ignored `data/` runtime storage.
+
+- Engine: https://github.com/ggml-org/whisper.cpp
+- Model repository: https://huggingface.co/ggerganov/whisper.cpp

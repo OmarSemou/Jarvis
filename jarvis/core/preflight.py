@@ -1,4 +1,4 @@
-"""Read-only, platform-aware Jarvis Phase 1 diagnostics."""
+"""Read-only, platform-aware Jarvis Phase 2C1 diagnostics."""
 
 from __future__ import annotations
 
@@ -11,12 +11,16 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from jarvis.audio.devices import MicrophoneDeviceService, MicrophoneStatus
+
+from .config import ConfigValidationError, JarvisConfig, load_for_paths
 from .paths import JarvisPaths
 
 
 class RequirementLevel(StrEnum):
     REQUIRED = "required"
     DEVELOPMENT = "development"
+    CURRENT = "current/optional"
     FUTURE = "future/optional"
 
 
@@ -51,10 +55,15 @@ class PreflightReport:
 WhichFunction = Callable[[str], str | None]
 ExistsFunction = Callable[[Path], bool]
 ModuleFunction = Callable[[str], bool]
+MicrophoneProbe = Callable[[int | str | None], MicrophoneStatus]
 
 
 def _module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
+
+
+def _microphone_probe(configured: int | str | None) -> MicrophoneStatus:
+    return MicrophoneDeviceService(configured).status()
 
 
 def _first_file(candidates: Iterable[Path], exists: ExistsFunction) -> Path | None:
@@ -77,7 +86,7 @@ def _executable_check(
         located = which(command)
         if located:
             return PreflightCheck(name, level, CheckStatus.AVAILABLE, "executable found on PATH", Path(located))
-    return PreflightCheck(name, level, CheckStatus.MISSING, "executable not found; not required in Phase 1")
+    return PreflightCheck(name, level, CheckStatus.MISSING, "executable not found")
 
 
 def run_preflight(
@@ -89,14 +98,21 @@ def run_preflight(
     version_info: tuple[int, int, int] | None = None,
     platform_name: str | None = None,
     environment: Mapping[str, str] | None = None,
+    microphone_probe: MicrophoneProbe = _microphone_probe,
+    config: JarvisConfig | None = None,
 ) -> PreflightReport:
-    """Inspect local availability without imports, subprocesses, or network I/O."""
+    """Inspect local availability without streams, subprocesses, or network I/O."""
 
     paths = paths or JarvisPaths.discover()
     version = version_info or (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
     platform_value = platform_name or sys.platform
     environment_values = os.environ if environment is None else environment
     checks: list[PreflightCheck] = []
+    if config is None:
+        try:
+            config = load_for_paths(paths).config
+        except ConfigValidationError:
+            config = JarvisConfig()
 
     python_ok = version[:2] == (3, 13)
     checks.append(
@@ -104,7 +120,7 @@ def run_preflight(
             "Python",
             RequirementLevel.REQUIRED,
             CheckStatus.AVAILABLE if python_ok else CheckStatus.MISSING,
-            f"{version[0]}.{version[1]}.{version[2]} detected; Jarvis Phase 1 requires >=3.13,<3.14",
+            f"{version[0]}.{version[1]}.{version[2]} detected; Jarvis requires >=3.13,<3.14",
             Path(sys.executable),
         )
     )
@@ -126,7 +142,7 @@ def run_preflight(
             "pytest",
             RequirementLevel.DEVELOPMENT,
             CheckStatus.AVAILABLE if module_available("pytest") else CheckStatus.MISSING,
-            "development test dependency" if module_available("pytest") else "install the Phase 1 development extra",
+            "development test dependency" if module_available("pytest") else "install the development extra",
         )
     )
     ollama_candidates: tuple[Path, ...] = ()
@@ -145,21 +161,35 @@ def run_preflight(
     checks.append(
         _executable_check(
             "Ollama",
-            RequirementLevel.FUTURE,
+            RequirementLevel.CURRENT,
             ("ollama.exe", "ollama") if platform_value.startswith("win") else ("ollama", "ollama.exe"),
             ollama_candidates,
             which=which,
             exists=exists,
         )
     )
+    configured_whisper = paths.resolve_from_root(config.whisper_executable_path)
+    whisper_candidates = tuple(
+        dict.fromkeys((configured_whisper, *paths.whisper_executable_candidates))
+    )
     checks.append(
         _executable_check(
             "Whisper.cpp",
-            RequirementLevel.FUTURE,
+            RequirementLevel.CURRENT,
             ("whisper-cli.exe", "whisper-cli") if platform_value.startswith("win") else ("whisper-cli", "whisper-cli.exe"),
-            paths.whisper_executable_candidates,
+            whisper_candidates,
             which=which,
             exists=exists,
+        )
+    )
+    configured_model = paths.resolve_from_root(config.whisper_model_path)
+    checks.append(
+        PreflightCheck(
+            "Whisper model",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if exists(configured_model) else CheckStatus.MISSING,
+            "multilingual model found" if exists(configured_model) else "configured model not found",
+            configured_model,
         )
     )
     checks.append(
@@ -177,18 +207,41 @@ def run_preflight(
             "Wake-word model",
             RequirementLevel.FUTURE,
             CheckStatus.AVAILABLE if exists(paths.wakeword_model) else CheckStatus.MISSING,
-            "model file found" if exists(paths.wakeword_model) else "model file not found; wake word is not required in Phase 1",
+            "model file found" if exists(paths.wakeword_model) else "model file not found; wake word is a future feature",
             paths.wakeword_model,
         )
     )
+    sounddevice_available = module_available("sounddevice")
     checks.append(
         PreflightCheck(
-            "Microphone support",
-            RequirementLevel.FUTURE,
-            CheckStatus.NOT_CHECKED if module_available("sounddevice") else CheckStatus.MISSING,
-            "sounddevice is installed; hardware intentionally not probed" if module_available("sounddevice") else "sounddevice is not installed; hardware not probed",
+            "sounddevice",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if sounddevice_available else CheckStatus.MISSING,
+            "local microphone dependency installed"
+            if sounddevice_available
+            else "install project requirements for microphone capture",
         )
     )
+    if sounddevice_available:
+        microphone = microphone_probe(config.input_device)
+        microphone_check = PreflightCheck(
+            "Microphone",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if microphone.available else CheckStatus.MISSING,
+            (
+                f"{microphone.selected.index}: {microphone.selected.name} ({microphone.detail})"
+                if microphone.available and microphone.selected is not None
+                else microphone.detail
+            ),
+        )
+    else:
+        microphone_check = PreflightCheck(
+            "Microphone",
+            RequirementLevel.CURRENT,
+            CheckStatus.NOT_CHECKED,
+            "not inspected because sounddevice is unavailable",
+        )
+    checks.append(microphone_check)
     camera_backend = module_available("cv2") or bool(which("rpicam-still"))
     checks.append(
         PreflightCheck(
@@ -202,7 +255,7 @@ def run_preflight(
 
 
 def format_report(report: PreflightReport) -> str:
-    lines = ["Jarvis Phase 1 preflight (read-only)", ""]
+    lines = ["Jarvis Phase 2C1 preflight (read-only)", ""]
     for check in report.checks:
         path = f" [{check.path}]" if check.path is not None else ""
         lines.append(f"{check.status.value:11} {check.level.value:15} {check.name}: {check.detail}{path}")

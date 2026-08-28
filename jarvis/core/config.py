@@ -58,6 +58,12 @@ KNOWN_KEYS = frozenset(
         "ollama_connect_timeout_seconds",
         "ollama_read_timeout_seconds",
         "ollama_keep_alive",
+        "whisper_executable_path",
+        "whisper_model_path",
+        "stt_language",
+        "stt_timeout_seconds",
+        "stt_use_gpu",
+        "retain_recordings",
     }
 )
 
@@ -83,6 +89,14 @@ class JarvisConfig:
     ollama_connect_timeout_seconds: float = 3.0
     ollama_read_timeout_seconds: float = 120.0
     ollama_keep_alive: str = "5m"
+    whisper_executable_path: str = (
+        "data/tools/whisper.cpp/v1.9.1/Release/whisper-cli.exe"
+    )
+    whisper_model_path: str = "data/models/whisper/ggml-small.bin"
+    stt_language: str = "auto"
+    stt_timeout_seconds: float = 180.0
+    stt_use_gpu: bool = False
+    retain_recordings: bool = False
 
     def effective_system_prompt(self, fallback: str) -> str:
         """Return the configured prompt, then append optional extra guidance."""
@@ -112,6 +126,12 @@ class JarvisConfig:
             "ollama_connect_timeout_seconds": self.ollama_connect_timeout_seconds,
             "ollama_read_timeout_seconds": self.ollama_read_timeout_seconds,
             "ollama_keep_alive": self.ollama_keep_alive,
+            "whisper_executable_path": self.whisper_executable_path,
+            "whisper_model_path": self.whisper_model_path,
+            "stt_language": self.stt_language,
+            "stt_timeout_seconds": self.stt_timeout_seconds,
+            "stt_use_gpu": self.stt_use_gpu,
+            "retain_recordings": self.retain_recordings,
         }
 
 
@@ -240,6 +260,25 @@ def parse_config(
 
     ollama_keep_alive = _validate_string(merged, "ollama_keep_alive", problems)
 
+    whisper_executable_path = _validate_string(merged, "whisper_executable_path", problems)
+    whisper_model_path = _validate_string(merged, "whisper_model_path", problems)
+
+    stt_language = _validate_string(merged, "stt_language", problems).casefold()
+    if stt_language not in {"auto", "en", "da"}:
+        problems.append("'stt_language' must be one of: auto, en, da")
+
+    stt_timeout_seconds = merged["stt_timeout_seconds"]
+    if not _is_finite_number(stt_timeout_seconds) or not 0 < stt_timeout_seconds <= 600:
+        problems.append("'stt_timeout_seconds' must be a number greater than 0 and at most 600")
+
+    stt_use_gpu = merged["stt_use_gpu"]
+    if not isinstance(stt_use_gpu, bool):
+        problems.append("'stt_use_gpu' must be a boolean")
+
+    retain_recordings = merged["retain_recordings"]
+    if not isinstance(retain_recordings, bool):
+        problems.append("'retain_recordings' must be a boolean")
+
     if problems:
         raise ConfigValidationError(source_path, problems)
 
@@ -261,6 +300,12 @@ def parse_config(
         ollama_connect_timeout_seconds=float(ollama_connect_timeout_seconds),
         ollama_read_timeout_seconds=float(ollama_read_timeout_seconds),
         ollama_keep_alive=ollama_keep_alive,
+        whisper_executable_path=whisper_executable_path,
+        whisper_model_path=whisper_model_path,
+        stt_language=stt_language,
+        stt_timeout_seconds=float(stt_timeout_seconds),
+        stt_use_gpu=stt_use_gpu,
+        retain_recordings=retain_recordings,
     )
     return ConfigLoadResult(config, source_path, tuple(migrations), tuple(unknown))
 

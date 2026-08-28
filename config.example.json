@@ -15,5 +15,11 @@
   "ollama_host": "http://127.0.0.1:11434",
   "ollama_connect_timeout_seconds": 3.0,
   "ollama_read_timeout_seconds": 120.0,
-  "ollama_keep_alive": "5m"
+  "ollama_keep_alive": "5m",
+  "whisper_executable_path": "data/tools/whisper.cpp/v1.9.1/Release/whisper-cli.exe",
+  "whisper_model_path": "data/models/whisper/ggml-small.bin",
+  "stt_language": "auto",
+  "stt_timeout_seconds": 180.0,
+  "stt_use_gpu": false,
+  "retain_recordings": false
 }

@@ -78,6 +78,22 @@ class JarvisPaths:
         return self.data_dir / "input.wav"
 
     @property
+    def recordings_dir(self) -> Path:
+        return self.data_dir / "recordings"
+
+    @property
+    def stt_temp_dir(self) -> Path:
+        return self.data_dir / "stt"
+
+    @property
+    def local_tools_dir(self) -> Path:
+        return self.data_dir / "tools"
+
+    @property
+    def local_models_dir(self) -> Path:
+        return self.data_dir / "models"
+
+    @property
     def camera_image_file(self) -> Path:
         return self.data_dir / "current_image.jpg"
 
@@ -95,12 +111,18 @@ class JarvisPaths:
 
     @property
     def whisper_model(self) -> Path:
-        return self.repository_root / "whisper.cpp" / "models" / "ggml-base.en.bin"
+        return self.local_models_dir / "whisper" / "ggml-small.bin"
 
     @property
     def whisper_executable_candidates(self) -> tuple[Path, ...]:
-        base = self.repository_root / "whisper.cpp" / "build" / "bin"
-        return (base / "whisper-cli.exe", base / "whisper-cli")
+        installed = self.local_tools_dir / "whisper.cpp" / "v1.9.1" / "Release"
+        legacy = self.repository_root / "whisper.cpp" / "build" / "bin"
+        return (
+            installed / "whisper-cli.exe",
+            installed / "whisper-cli",
+            legacy / "whisper-cli.exe",
+            legacy / "whisper-cli",
+        )
 
     @property
     def piper_executable_candidates(self) -> tuple[Path, ...]:

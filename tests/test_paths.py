@@ -16,6 +16,9 @@ def test_paths_do_not_depend_on_current_working_directory(tmp_path, monkeypatch)
     assert paths.repository_root == root.resolve()
     assert paths.legacy_config_file == root.resolve() / "config.json"
     assert paths.memory_file == root.resolve() / "data" / "memory.json"
+    assert paths.recordings_dir == root.resolve() / "data" / "recordings"
+    assert paths.stt_temp_dir == root.resolve() / "data" / "stt"
+    assert paths.whisper_model == root.resolve() / "data" / "models" / "whisper" / "ggml-small.bin"
     assert paths.resolve_from_root("models/test.bin") == root.resolve() / "models" / "test.bin"
 
 
@@ -69,5 +72,6 @@ def test_windows_executable_candidates_are_explicit(tmp_path):
     paths = JarvisPaths.from_repository_root(tmp_path)
 
     assert paths.whisper_executable_candidates[0].name == "whisper-cli.exe"
+    assert "v1.9.1" in str(paths.whisper_executable_candidates[0])
     assert paths.piper_executable_candidates[0].name == "piper.exe"
     assert all(isinstance(path, Path) for path in paths.whisper_executable_candidates)

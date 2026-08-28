@@ -1,4 +1,6 @@
 from jarvis.core.paths import JarvisPaths
+from jarvis.core.config import JarvisConfig
+from jarvis.audio.devices import AudioDevice, MicrophoneStatus
 from jarvis.core.preflight import (
     CheckStatus,
     RequirementLevel,
@@ -34,7 +36,8 @@ def test_preflight_passes_required_checks_without_future_components(tmp_path):
     assert before == after
     assert _by_name(report, "Whisper.cpp").status is CheckStatus.MISSING
     assert _by_name(report, "Piper").level is RequirementLevel.FUTURE
-    assert _by_name(report, "Microphone support").status is CheckStatus.MISSING
+    assert _by_name(report, "sounddevice").status is CheckStatus.MISSING
+    assert _by_name(report, "Microphone").status is CheckStatus.NOT_CHECKED
     assert _by_name(report, "Camera support").status is CheckStatus.MISSING
 
 
@@ -101,6 +104,45 @@ def test_report_is_understandable_and_labels_future_items(tmp_path):
     )
 
     rendered = format_report(report)
-    assert "Jarvis Phase 1 preflight (read-only)" in rendered
+    assert "Jarvis Phase 2C1 preflight (read-only)" in rendered
     assert "future/optional" in rendered
     assert "Required checks: PASS" in rendered
+
+
+def test_preflight_reports_configured_whisper_model_and_microphone_without_opening_stream(tmp_path):
+    paths = _repository(tmp_path)
+    executable = tmp_path / "private" / "whisper-cli.exe"
+    model = tmp_path / "private" / "ggml-small.bin"
+    executable.parent.mkdir()
+    executable.write_text("", encoding="utf-8")
+    model.write_text("", encoding="utf-8")
+    probed = []
+
+    def probe(configured):
+        probed.append(configured)
+        return MicrophoneStatus(
+            True,
+            AudioDevice(4, "USB Mic", 1, 48_000, True),
+            configured,
+            "configured input",
+        )
+
+    report = run_preflight(
+        paths,
+        which=lambda _name: None,
+        module_available=lambda name: name == "sounddevice",
+        version_info=(3, 13, 15),
+        platform_name="win32",
+        microphone_probe=probe,
+        config=JarvisConfig(
+            input_device=4,
+            whisper_executable_path="private/whisper-cli.exe",
+            whisper_model_path="private/ggml-small.bin",
+        ),
+    )
+
+    assert probed == [4]
+    assert _by_name(report, "Whisper.cpp").path == executable.resolve()
+    assert _by_name(report, "Whisper model").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "sounddevice").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "Microphone").status is CheckStatus.AVAILABLE
