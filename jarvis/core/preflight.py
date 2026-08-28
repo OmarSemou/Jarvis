@@ -1,4 +1,4 @@
-"""Read-only, platform-aware Jarvis Phase 2C1 diagnostics."""
+"""Read-only, platform-aware Jarvis Phase 2C1.1 diagnostics."""
 
 from __future__ import annotations
 
@@ -182,16 +182,23 @@ def run_preflight(
             exists=exists,
         )
     )
-    configured_model = paths.resolve_from_root(config.whisper_model_path)
-    checks.append(
-        PreflightCheck(
-            "Whisper model",
-            RequirementLevel.CURRENT,
-            CheckStatus.AVAILABLE if exists(configured_model) else CheckStatus.MISSING,
-            "multilingual model found" if exists(configured_model) else "configured model not found",
-            configured_model,
+    for model_name in ("base", "small"):
+        model_path = paths.whisper_model_for(model_name)
+        selected = model_name == config.stt_model
+        found = exists(model_path)
+        checks.append(
+            PreflightCheck(
+                f"Whisper model ({model_name})",
+                RequirementLevel.CURRENT,
+                CheckStatus.AVAILABLE if found else CheckStatus.MISSING,
+                (
+                    f"multilingual model found ({'selected' if selected else 'benchmark candidate'})"
+                    if found
+                    else f"multilingual model not found ({'selected' if selected else 'benchmark candidate'})"
+                ),
+                model_path,
+            )
         )
-    )
     checks.append(
         _executable_check(
             "Piper",
@@ -255,7 +262,7 @@ def run_preflight(
 
 
 def format_report(report: PreflightReport) -> str:
-    lines = ["Jarvis Phase 2C1 preflight (read-only)", ""]
+    lines = ["Jarvis Phase 2C1.1 preflight (read-only)", ""]
     for check in report.checks:
         path = f" [{check.path}]" if check.path is not None else ""
         lines.append(f"{check.status.value:11} {check.level.value:15} {check.name}: {check.detail}{path}")

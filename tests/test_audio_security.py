@@ -13,7 +13,11 @@ def test_setup_script_is_pinned_verified_and_never_uses_english_only_model():
     assert "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539" in script
     assert "ggml-small.bin" in script
     assert "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b" in script
+    assert "ggml-base.bin" in script
+    assert "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe" in script
+    assert 'ValidateSet("base", "small", "all")' in script
     assert "small.en" not in script
+    assert "base.en" not in script
     assert "/latest/" not in script
     assert "SetEnvironmentVariable" not in script
 
@@ -34,3 +38,16 @@ def test_conversation_service_has_no_audio_or_whisper_dependency():
 
     assert not any(name.startswith("jarvis.audio") for name in imports)
     assert not any("whisper" in name for name in imports)
+
+
+def test_benchmark_module_has_no_llm_network_or_download_dependency():
+    tree = ast.parse((ROOT / "jarvis" / "audio" / "benchmark.py").read_text(encoding="utf-8"))
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module)
+
+    forbidden = ("jarvis.llm", "ollama", "httpx", "requests", "urllib", "socket")
+    assert not any(name.startswith(forbidden) for name in imports)

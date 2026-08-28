@@ -3,8 +3,8 @@
 Jarvis is becoming a fully local, API-free personal companion robot. The
 repository now includes the **Phase 1 architecture and safety foundation** and
 **Phase 2A local text conversation**, and **Phase 2B structured robot tools with
-a deterministic simulator** for Windows 11. **Phase 2C1 adds explicit local
-push-to-talk hearing through whisper.cpp.** Jarvis does not yet speak, listen
+a deterministic simulator** for Windows 11. **Phase 2C1.1 adds configurable
+multilingual push-to-talk hearing and a local whisper.cpp benchmark.** Jarvis does not yet speak, listen
 continuously, or control a physical robot.
 
 The project is derived from
@@ -39,12 +39,13 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
   selection through `sounddevice`.
 - Explicit developer push-to-talk recording to mono PCM16 16 kHz WAV.
 - Provider-neutral local speech-to-text through a configured `whisper.cpp`
-  process using the multilingual Whisper `small` model.
+  process using an allowlisted multilingual Whisper `base` or `small` model.
 - Voice transcripts routed into the same conversation, structured-tool, safety,
   and simulator path as typed text.
-- Private recording deletion by default and an LLM-free `stt-check` command.
+- Private recording deletion by default plus LLM-free `stt-check` and bilingual
+  `stt-benchmark` commands.
 
-The existing `agent.py` remains a compatibility launcher. Phase 2C1 does not
+The existing `agent.py` remains a compatibility launcher. Phase 2C1.1 does not
 reuse its legacy last-stdout-line Whisper parsing or GUI audio thread. Wake
 word, Piper, camera, memory, and GUI implementations there have not been
 modularized. The new chat/hearing path does not use the legacy `BotGUI` class.
@@ -74,7 +75,7 @@ with:
 ```
 
 The CLI supports `/status`, `/reset`, `/think on`, `/think off`,
-`/robot status`, `/robot estop`, `/robot estop-reset`, `/talk`, `/mic list`,
+`/robot status`, `/robot estop`, `/robot estop-reset`, `/talk`, `/stt status`, `/mic list`,
 `/mic status`, `/mic use <device>`, and `/quit`.
 Robot actions print concise developer events such as `[ROBOT] gesture=wave`.
 The `/robot estop-reset` command is trusted local CLI control and is not in the
@@ -93,10 +94,19 @@ Run the explicit installer yourself; Jarvis startup never downloads Whisper:
 powershell -ExecutionPolicy Bypass -File scripts/setup_whisper_windows.ps1
 ```
 
-The script installs the official `whisper.cpp` v1.9.1 Windows x64 CPU build
-and multilingual `ggml-small.bin` model beneath ignored `data/` storage. Both
-downloads are pinned and SHA-256 verified. It requires no administrator access,
-does not change global `PATH`, and is safe to rerun.
+The default command installs the official `whisper.cpp` v1.9.1 Windows x64 CPU
+build and the selected multilingual `ggml-base.bin` beneath ignored `data/`
+storage. Install or verify base explicitly without removing small with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_whisper_windows.ps1 -Models base
+```
+
+Use `-Models small` for the higher-capacity alternative, or `-Models base,small`
+(or `-Models all`) when setting up both. The binary and
+both model sources are pinned and SHA-256 verified. Valid files are not
+redownloaded. The script requires no administrator access, does not change
+global `PATH`, and is safe to rerun.
 
 List or inspect microphone inputs with `/mic list` and `/mic status`. A
 session-only selection can be made with `/mic use <index or unique name>`. Use
@@ -113,6 +123,19 @@ Test microphone capture and transcription without Ollama or an LLM:
 
 For a one-off check with a non-default input, add `--mic 20` (or a unique
 device-name fragment). This does not persist configuration.
+
+Compare base and small on the fixed six-English/five-Danish phrase set with:
+
+```powershell
+.\.venv\Scripts\python.exe -m jarvis stt-benchmark
+```
+
+Each phrase is recorded once and the same WAV is used for both models over a
+cold-ish first pass and OS-file-cache repeat. Recordings are deleted after the
+run; `--retain-recordings` is an explicit developer opt-in. This command never
+constructs an LLM or performs network/download work. Each transcription still
+starts `whisper-cli` and reloads its model, so reported latency includes that
+process-per-command design.
 
 Run the read-only diagnostic with:
 
@@ -142,9 +165,9 @@ Supported fields are:
 - `conversation_max_tool_rounds` (default `3`)
 - `ollama_host`, `ollama_connect_timeout_seconds`
 - `ollama_read_timeout_seconds`, `ollama_keep_alive`
-- `whisper_executable_path`, `whisper_model_path`
+- `whisper_executable_path`, `stt_model` (`base` or `small` only)
 - `stt_language` (`auto`, `en`, or `da`; default `auto`)
-- `stt_timeout_seconds`, `stt_use_gpu` (default `false` in Phase 2C1)
+- `stt_timeout_seconds`, `stt_use_gpu` (default `false` in Phase 2C1.1)
 - `retain_recordings` (default `false`)
 
 Unknown keys and legacy aliases are handled deliberately by
@@ -152,6 +175,13 @@ Unknown keys and legacy aliases are handled deliberately by
 tracked source locations. The new Ollama endpoint defaults to
 `http://127.0.0.1:11434`; only HTTP loopback addresses are accepted. The adapter
 disables environment proxy discovery and does not silently honor `OLLAMA_HOST`.
+
+`stt_model` defaults to `base`. On the Phase 2C1.1 Windows benchmark it retained
+the tested English command accuracy while reducing warm median transcription
+latency from about 3.56 seconds (`small`) to 1.12 seconds. Small remains an
+explicit higher-capacity alternative. Both candidates require further Danish
+testing because automatic language detection performed poorly on this short
+corpus.
 
 `system_prompt` and `system_prompt_extras` participate in Phase 2B as an
 explicitly bounded customization section. They cannot override immutable
@@ -194,14 +224,15 @@ Microphone recordings use unique names beneath ignored `data/recordings/`.
 They are deleted after successful or failed transcription unless
 `retain_recordings` is explicitly set to `true`. Temporary Whisper output is
 also deleted. Jarvis does not log raw audio or invoke a cloud speech service.
-The Phase 2C1 build is CPU-only; `stt_use_gpu` remains false until a later,
+The Phase 2C1.1 build is CPU-only; `stt_use_gpu` remains false. Vulkan and
+other acceleration backends remain deferred until a later,
 explicit acceleration decision.
 
 ## Not implemented yet
 
 TTS/speech playback, wake word, VAD, barge-in/interruption, face GUI,
 camera/vision, web search, persistent memory, ESP32 communication, motors,
-servos, and physical movement are not part of Phase 2C1. Raspberry Pi
+servos, and physical movement are not part of Phase 2C1.1. Raspberry Pi
 deployment comes after desktop and simulator validation.
 
 ## Legacy files

@@ -59,7 +59,7 @@ KNOWN_KEYS = frozenset(
         "ollama_read_timeout_seconds",
         "ollama_keep_alive",
         "whisper_executable_path",
-        "whisper_model_path",
+        "stt_model",
         "stt_language",
         "stt_timeout_seconds",
         "stt_use_gpu",
@@ -92,7 +92,7 @@ class JarvisConfig:
     whisper_executable_path: str = (
         "data/tools/whisper.cpp/v1.9.1/Release/whisper-cli.exe"
     )
-    whisper_model_path: str = "data/models/whisper/ggml-small.bin"
+    stt_model: str = "base"
     stt_language: str = "auto"
     stt_timeout_seconds: float = 180.0
     stt_use_gpu: bool = False
@@ -127,7 +127,7 @@ class JarvisConfig:
             "ollama_read_timeout_seconds": self.ollama_read_timeout_seconds,
             "ollama_keep_alive": self.ollama_keep_alive,
             "whisper_executable_path": self.whisper_executable_path,
-            "whisper_model_path": self.whisper_model_path,
+            "stt_model": self.stt_model,
             "stt_language": self.stt_language,
             "stt_timeout_seconds": self.stt_timeout_seconds,
             "stt_use_gpu": self.stt_use_gpu,
@@ -261,7 +261,9 @@ def parse_config(
     ollama_keep_alive = _validate_string(merged, "ollama_keep_alive", problems)
 
     whisper_executable_path = _validate_string(merged, "whisper_executable_path", problems)
-    whisper_model_path = _validate_string(merged, "whisper_model_path", problems)
+    stt_model = _validate_string(merged, "stt_model", problems).casefold()
+    if stt_model not in {"base", "small"}:
+        problems.append("'stt_model' must be one of: base, small")
 
     stt_language = _validate_string(merged, "stt_language", problems).casefold()
     if stt_language not in {"auto", "en", "da"}:
@@ -301,7 +303,7 @@ def parse_config(
         ollama_read_timeout_seconds=float(ollama_read_timeout_seconds),
         ollama_keep_alive=ollama_keep_alive,
         whisper_executable_path=whisper_executable_path,
-        whisper_model_path=whisper_model_path,
+        stt_model=stt_model,
         stt_language=stt_language,
         stt_timeout_seconds=float(stt_timeout_seconds),
         stt_use_gpu=stt_use_gpu,

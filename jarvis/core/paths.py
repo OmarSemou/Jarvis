@@ -111,7 +111,17 @@ class JarvisPaths:
 
     @property
     def whisper_model(self) -> Path:
+        """Return the legacy compatibility launcher's small-model path."""
+
         return self.local_models_dir / "whisper" / "ggml-small.bin"
+
+    def whisper_model_for(self, model: str) -> Path:
+        """Resolve one allowlisted multilingual whisper.cpp model name."""
+
+        normalized = model.strip().casefold()
+        if normalized not in {"base", "small"}:
+            raise ValueError("Whisper model must be one of: base, small")
+        return self.local_models_dir / "whisper" / f"ggml-{normalized}.bin"
 
     @property
     def whisper_executable_candidates(self) -> tuple[Path, ...]:

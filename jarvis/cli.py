@@ -8,6 +8,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from time import perf_counter
 
+from jarvis.audio.benchmark import (
+    BENCHMARK_PHRASES,
+    BenchmarkRecording,
+    BenchmarkSTT,
+    cleanup_recordings,
+    format_benchmark_report,
+    run_benchmark,
+)
 from jarvis.audio.devices import (
     MicrophoneDeviceService,
     MicrophoneError,
@@ -17,7 +25,11 @@ from jarvis.audio.devices import (
 from jarvis.audio.recorder import PushToTalkRecorder, RecordingError
 from jarvis.audio.service import VoiceInputError, VoiceInputService
 from jarvis.audio.stt.base import TranscriptionResult
-from jarvis.audio.stt.whisper_cpp import WhisperCppSTT, WhisperCppSettings
+from jarvis.audio.stt.whisper_cpp import (
+    WHISPER_CPP_VERSION,
+    WhisperCppSTT,
+    WhisperCppSettings,
+)
 from jarvis.core.config import ConfigValidationError, JarvisConfig, load_for_paths
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.core.paths import JarvisPaths
@@ -58,21 +70,32 @@ def create_voice_runtime(
         paths.recordings_dir,
         preferred_sample_rate=config.input_sample_rate,
     )
-    stt = WhisperCppSTT(
-        WhisperCppSettings(
-            executable_path=paths.resolve_from_root(config.whisper_executable_path),
-            model_path=paths.resolve_from_root(config.whisper_model_path),
-            temp_dir=paths.stt_temp_dir.resolve(),
-            language=config.stt_language,
-            timeout_seconds=config.stt_timeout_seconds,
-            use_gpu=config.stt_use_gpu,
-        )
-    )
+    stt = create_stt_provider(config, paths)
     return VoiceInputService(
         devices,
         recorder,
         stt,
         retain_recordings=config.retain_recordings,
+    )
+
+
+def create_stt_provider(
+    config: JarvisConfig,
+    paths: JarvisPaths,
+    *,
+    model: str | None = None,
+) -> WhisperCppSTT:
+    selected_model = (model or config.stt_model).casefold()
+    return WhisperCppSTT(
+        WhisperCppSettings(
+            executable_path=paths.resolve_from_root(config.whisper_executable_path),
+            model_path=paths.whisper_model_for(selected_model).resolve(),
+            temp_dir=paths.stt_temp_dir.resolve(),
+            model_name=selected_model,
+            language=config.stt_language,
+            timeout_seconds=config.stt_timeout_seconds,
+            use_gpu=config.stt_use_gpu,
+        )
     )
 
 
@@ -137,6 +160,22 @@ def _format_robot_status(controller: SafeRobotController) -> str:
         f"Expression: {state.expression.value}\n"
         f"Last gesture: {gesture}\n"
         f"E-stop: {'latched' if state.emergency_stop_latched else 'clear'}"
+    )
+
+
+def _format_stt_status(voice: VoiceInputService) -> str:
+    provider = voice.stt
+    if not isinstance(provider, WhisperCppSTT):
+        return f"STT provider: {provider.name}"
+    settings = provider.settings
+    readiness = provider.readiness_error()
+    return (
+        f"STT provider: {provider.name}\n"
+        f"Version: {WHISPER_CPP_VERSION}\n"
+        f"Model: {settings.model_name}\n"
+        f"Backend: {'GPU' if settings.use_gpu else 'CPU'}\n"
+        f"Language: {settings.language}\n"
+        f"Ready: {'yes' if readiness is None else 'no'}"
     )
 
 
@@ -239,7 +278,7 @@ def run_chat(
     output_fn(
         "Commands: /status, /reset, /think on, /think off, "
         "/robot status, /robot estop, /robot estop-reset, "
-        "/talk, /mic list, /mic status, /mic use <device>, /quit"
+        "/talk, /stt status, /mic list, /mic status, /mic use <device>, /quit"
     )
 
     while True:
@@ -277,6 +316,12 @@ def run_chat(
                     output_fn(format_device_list(voice_runtime.devices.list_inputs()))
                 except MicrophoneError as exc:
                     output_fn(f"Microphone error: {exc}")
+            continue
+        if command == "/stt status":
+            if voice_runtime is None:
+                output_fn("Voice input unavailable.")
+            else:
+                output_fn(_format_stt_status(voice_runtime))
             continue
         if command == "/mic status":
             if voice_runtime is None:
@@ -456,6 +501,93 @@ def stt_check_command(
     return 0
 
 
+def stt_benchmark_command(
+    *,
+    microphone: str | None = None,
+    retain_recordings: bool = False,
+    input_fn: InputFunction = input,
+    output_fn: OutputFunction = print,
+    paths: JarvisPaths | None = None,
+    config: JarvisConfig | None = None,
+    recorder: PushToTalkRecorder | None = None,
+    providers: dict[str, BenchmarkSTT] | None = None,
+) -> int:
+    """Capture the fixed corpus once and compare both local models without an LLM."""
+
+    recordings: list[BenchmarkRecording] = []
+    try:
+        paths = paths or JarvisPaths.discover()
+        config = config or load_for_paths(paths).config
+        if recorder is None:
+            devices = MicrophoneDeviceService(config.input_device)
+            if microphone is not None:
+                devices.configured_device = _parse_microphone_selector(microphone)
+            recorder = PushToTalkRecorder(
+                devices,
+                paths.recordings_dir,
+                preferred_sample_rate=config.input_sample_rate,
+            )
+        elif microphone is not None:
+            recorder.devices.configured_device = _parse_microphone_selector(microphone)
+        providers = providers or {
+            model: create_stt_provider(config, paths, model=model)
+            for model in ("base", "small")
+        }
+    except (ConfigValidationError, ValueError) as exc:
+        output_fn(f"Configuration error: {exc}")
+        return 2
+
+    for model in ("base", "small"):
+        provider = providers.get(model)
+        if provider is None:
+            output_fn(f"STT benchmark unavailable: no provider configured for {model}.")
+            return 1
+        readiness_error = provider.readiness_error()
+        if readiness_error is not None:
+            output_fn(f"STT benchmark unavailable for {model}: {readiness_error.message}")
+            return 1
+
+    output_fn("Jarvis local STT benchmark (no LLM or network calls)")
+    output_fn(
+        "Record each phrase once. The exact same temporary WAV will be used by base and small."
+    )
+    try:
+        for index, phrase in enumerate(BENCHMARK_PHRASES, start=1):
+            output_fn(f'Phrase {index}/{len(BENCHMARK_PHRASES)} [{phrase.language}]: "{phrase.expected}"')
+            input_fn("Press Enter to begin recording...")
+            session = recorder.start()
+            output_fn(
+                "Recording... press Enter to stop. "
+                f"[{session.device.name}, {session.capture_sample_rate} Hz capture]"
+            )
+            input_fn("")
+            recordings.append(BenchmarkRecording(phrase, recorder.stop()))
+
+        output_fn("Running two sequential process-per-command passes...")
+        report = run_benchmark(recordings, providers)
+        output_fn(format_benchmark_report(report))
+        return 0
+    except (EOFError, KeyboardInterrupt):
+        recorder.cancel()
+        output_fn("Benchmark cancelled.")
+        return 130
+    except RecordingError as exc:
+        recorder.cancel()
+        output_fn(f"Benchmark recording error: {exc}")
+        return 1
+    except Exception as exc:
+        recorder.cancel()
+        output_fn(f"STT benchmark failed safely: {exc}")
+        return 1
+    finally:
+        if retain_recordings:
+            for recording in recordings:
+                output_fn(f"Benchmark recording retained: {recording.audio.path}")
+        else:
+            for warning in cleanup_recordings(recordings):
+                output_fn(f"Privacy warning: {warning}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m jarvis", description="Jarvis local developer commands")
     subparsers = parser.add_subparsers(dest="command")
@@ -469,6 +601,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DEVICE",
         help="session-only microphone index or unique name",
     )
+    benchmark_parser = subparsers.add_parser(
+        "stt-benchmark",
+        help="record the fixed bilingual corpus once and compare base with small",
+    )
+    benchmark_parser.add_argument(
+        "--mic",
+        metavar="DEVICE",
+        help="session-only microphone index or unique name",
+    )
+    benchmark_parser.add_argument(
+        "--retain-recordings",
+        action="store_true",
+        help="keep the temporary benchmark WAV files for developer inspection",
+    )
     return parser
 
 
@@ -481,6 +627,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return llm_check_command()
     if args.command == "stt-check":
         return stt_check_command(microphone=args.mic)
+    if args.command == "stt-benchmark":
+        return stt_benchmark_command(
+            microphone=args.mic,
+            retain_recordings=args.retain_recordings,
+        )
     parser.print_help()
     return 2
 

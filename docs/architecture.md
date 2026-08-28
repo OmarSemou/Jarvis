@@ -5,8 +5,8 @@
 Phase 1 introduced side-effect-free configuration, path, application-state,
 preflight, robot-intent, and safety contracts. Phase 2A added local text
 conversation through Ollama. Phase 2B adds native structured tool calling and
-a deterministic safe robot simulator. Phase 2C1 adds explicit microphone
-capture and local speech recognition. The upstream `agent.py` remains the
+a deterministic safe robot simulator. Phase 2C1.1 adds configurable microphone
+capture, local speech recognition, and comparative STT benchmarking. The upstream `agent.py` remains the
 compatibility launcher. Wake word, speech synthesis, camera capture, memory
 storage, physical hardware, and Tkinter orchestration remain outside the new
 path until later phases.
@@ -15,8 +15,8 @@ Importing any `jarvis` module must not start a GUI, open devices, invoke
 subprocesses, perform network requests, or write files. Ollama transport is
 created only by an explicit CLI command, and requests are sent only by chat or
 `llm-check` actions. `sounddevice` is loaded only when an explicit microphone
-command runs, and `whisper.cpp` is invoked only after a completed recording or
-an explicit `stt-check`.
+command runs, and `whisper.cpp` is invoked only after a completed recording, an
+explicit `stt-check`, or the explicit local `stt-benchmark`.
 
 ## Phase 2B text and tool path
 
@@ -77,7 +77,7 @@ and maps expected transport failures into provider-neutral errors. It also owns
 all translation between native Ollama tool objects and Jarvis types. It
 contains no pull/download operation and streaming is deliberately deferred.
 
-## Phase 2C1 local hearing path
+## Phase 2C1.1 local hearing path
 
 ```text
 /talk (or explicit stt-check)
@@ -86,7 +86,8 @@ contains no pull/download operation and streaming is deliberately deferred.
   -> mono PCM16 WAV normalized to 16000 Hz
   -> STTProvider
   -> WhisperCppSTT
-  -> configured local whisper-cli executable and multilingual small model
+  -> configured local whisper-cli executable
+  -> allowlisted multilingual base or small model path
   -> provider-neutral TranscriptionResult
 ```
 
@@ -111,9 +112,28 @@ The Whisper adapter uses an explicit argument vector with `shell=False`, a
 bounded timeout, captured stdout/stderr, return-code checks, and the documented
 `--output-txt`/`--output-file` mechanism. Transcripts are read from the exact
 generated file—not inferred from console lines. Executable and model paths
-come only from validated local configuration. Phase 2C1 passes `--no-gpu` and
+The executable comes from validated local configuration. The symbolic
+`stt_model` value is restricted to `base` or `small` and maps to a fixed local
+path; arbitrary model paths are not accepted. Phase 2C1.1 passes `--no-gpu` and
 uses the official CPU release. A future backend executable can be selected in
 configuration without changing `ConversationService`.
+
+The benchmark path is separate from conversation:
+
+```text
+stt-benchmark
+  -> record fixed bilingual corpus once
+  -> retain WAV paths for this command only
+  -> base then small, sequentially, on each identical WAV
+  -> repeat as an OS-file-cache pass
+  -> aggregate wall time, RTF, normalized matches, and documented Whisper timings
+  -> delete captured WAV files unless explicitly retained
+```
+
+It creates neither `ConversationService` nor an LLM/network client. Normal
+`/talk` continues to pass `--no-prints`; only the benchmark omits that flag and
+parses known `whisper_print_timings` fields. Every call starts a subprocess and
+reloads its model. No persistent STT server was introduced.
 
 Recordings are uniquely named beneath ignored `data/recordings/` and deleted
 after success or failure by default. Whisper output uses a unique ignored
@@ -158,6 +178,7 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.audio.formats`: mono PCM16 resampling and WAV validation/writing.
 - `jarvis.audio.recorder`: explicit push-to-talk recording lifecycle.
 - `jarvis.audio.service`: STT coordination and private recording cleanup.
+- `jarvis.audio.benchmark`: fixed-corpus comparison, scoring, aggregation, and cleanup.
 - `jarvis.audio.stt.base`: provider-neutral transcription result/error contract.
 - `jarvis.audio.stt.whisper_cpp`: bounded local subprocess adapter.
 - `jarvis.core.conversation`: provider-independent in-memory turn orchestration.
@@ -177,5 +198,5 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 
 Future modules will add local TTS, wake word, VAD, interruption, memory, face,
 vision, integrations, physical robot components, and ESP32 transport. None of
-those integrations is part of Phase 2C1. Microphone/STT testing and the robot
+those integrations is part of Phase 2C1.1. Microphone/STT testing and the robot
 simulator are not hardware safety validation.

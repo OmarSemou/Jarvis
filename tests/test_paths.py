@@ -19,12 +19,21 @@ def test_paths_do_not_depend_on_current_working_directory(tmp_path, monkeypatch)
     assert paths.recordings_dir == root.resolve() / "data" / "recordings"
     assert paths.stt_temp_dir == root.resolve() / "data" / "stt"
     assert paths.whisper_model == root.resolve() / "data" / "models" / "whisper" / "ggml-small.bin"
+    assert paths.whisper_model_for("base") == root.resolve() / "data" / "models" / "whisper" / "ggml-base.bin"
+    assert paths.whisper_model_for("SMALL") == paths.whisper_model
     assert paths.resolve_from_root("models/test.bin") == root.resolve() / "models" / "test.bin"
 
 
 def test_repository_root_must_be_explicitly_absolute():
     with pytest.raises(ValueError, match="absolute path"):
         JarvisPaths.from_repository_root("relative/repository")
+
+
+def test_whisper_model_paths_are_allowlisted(tmp_path):
+    paths = JarvisPaths.from_repository_root(tmp_path)
+
+    with pytest.raises(ValueError, match="base, small"):
+        paths.whisper_model_for("../../arbitrary")
 
 
 def test_constructing_paths_does_not_create_runtime_directory(tmp_path):

@@ -125,7 +125,7 @@ def test_phase2a_model_and_thinking_defaults():
     assert config.stt_language == "auto"
     assert config.stt_use_gpu is False
     assert config.retain_recordings is False
-    assert config.whisper_model_path.endswith("ggml-small.bin")
+    assert config.stt_model == "base"
 
 
 def test_phase2a_configuration_is_parsed():
@@ -154,7 +154,7 @@ def test_phase2c1_configuration_is_parsed():
     result = parse_config(
         {
             "whisper_executable_path": "private/whisper-cli.exe",
-            "whisper_model_path": "private/ggml-small.bin",
+            "stt_model": "BASE",
             "stt_language": "DA",
             "stt_timeout_seconds": 45,
             "stt_use_gpu": False,
@@ -163,7 +163,7 @@ def test_phase2c1_configuration_is_parsed():
     )
 
     assert result.config.whisper_executable_path == "private/whisper-cli.exe"
-    assert result.config.whisper_model_path == "private/ggml-small.bin"
+    assert result.config.stt_model == "base"
     assert result.config.stt_language == "da"
     assert result.config.stt_timeout_seconds == 45.0
     assert result.config.stt_use_gpu is False
@@ -184,6 +184,8 @@ def test_phase2c1_configuration_is_parsed():
         ({"stt_use_gpu": "yes"}, "must be a boolean"),
         ({"retain_recordings": 1}, "must be a boolean"),
         ({"whisper_executable_path": ""}, "must be a non-empty string"),
+        ({"stt_model": "large"}, "must be one of: base, small"),
+        ({"whisper_model_path": "private/model.bin"}, "unknown key"),
     ],
 )
 def test_invalid_phase2a_configuration_is_rejected(raw, message):

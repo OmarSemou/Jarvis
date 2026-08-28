@@ -6,7 +6,11 @@ import pytest
 
 from jarvis.audio.formats import write_pcm16_mono_wav
 from jarvis.audio.stt.base import TranscriptionErrorCode
-from jarvis.audio.stt.whisper_cpp import WhisperCppSTT, WhisperCppSettings
+from jarvis.audio.stt.whisper_cpp import (
+    WhisperCppSTT,
+    WhisperCppSettings,
+    parse_whisper_timings,
+)
 
 
 def make_provider(tmp_path, runner, **overrides):
@@ -58,6 +62,7 @@ def test_command_is_explicit_cpu_only_and_uses_no_shell(tmp_path):
     assert command[command.index("--model") + 1] == str(provider.settings.model_path)
     assert command[command.index("--file") + 1] == str(audio)
     assert "--output-txt" in command
+    assert "--no-prints" in command
     assert "--no-gpu" in command
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 30
@@ -162,3 +167,55 @@ def test_settings_require_validated_absolute_paths_and_language(tmp_path):
         WhisperCppSettings(Path("relative.exe"), tmp_path.resolve(), tmp_path.resolve())
     with pytest.raises(ValueError, match="language"):
         WhisperCppSettings(tmp_path.resolve(), tmp_path.resolve(), tmp_path.resolve(), language="fr")
+    with pytest.raises(ValueError, match="model_name"):
+        WhisperCppSettings(
+            tmp_path.resolve(),
+            tmp_path.resolve(),
+            tmp_path.resolve(),
+            model_name="large",
+        )
+
+
+def test_benchmark_path_enables_and_parses_documented_whisper_timings(tmp_path):
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        output_prefix_from(command).with_suffix(".txt").write_text(
+            "Hello Jarvis.", encoding="utf-8"
+        )
+        return SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr=(
+                "whisper_print_timings:     load time =   610.00 ms\n"
+                "whisper_print_timings:   encode time =  1200.00 ms\n"
+                "whisper_print_timings:   decode time =   300.00 ms\n"
+                "whisper_print_timings:    total time =  2200.00 ms\n"
+            ),
+        )
+
+    outcome = make_provider(tmp_path, runner, model_name="small").benchmark_transcribe(
+        make_audio(tmp_path)
+    )
+
+    assert outcome.transcription.success
+    assert outcome.timings.load_seconds == pytest.approx(0.61)
+    assert outcome.timings.encode_seconds == pytest.approx(1.2)
+    assert outcome.timings.decode_seconds == pytest.approx(0.3)
+    assert outcome.timings.total_seconds == pytest.approx(2.2)
+    assert "--no-prints" not in calls[0][0]
+    assert calls[0][1]["shell"] is False
+
+
+def test_timing_parser_ignores_unrelated_and_malformed_output():
+    timings = parse_whisper_timings(
+        "private transcript\n"
+        "whisper_print_timings: load time = unknown ms\n"
+        "whisper_print_timings: mel time = 25.0 ms\n"
+        "not_whisper: total time = 2 ms"
+    )
+
+    assert timings.mel_seconds == pytest.approx(0.025)
+    assert timings.load_seconds is None
+    assert timings.total_seconds is None

@@ -4,6 +4,7 @@ from jarvis.audio.devices import AudioDevice, MicrophoneStatus
 from jarvis.audio.recorder import RecordingError, RecordingSession
 from jarvis.audio.service import VoiceInputOutcome
 from jarvis.audio.stt.base import TranscriptionResult
+from jarvis.audio.stt.whisper_cpp import WhisperCppSTT, WhisperCppSettings
 from jarvis.cli import run_chat
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.llm.base import LLMResponse
@@ -194,3 +195,39 @@ def test_typed_chat_still_works_when_voice_runtime_exists():
 
     assert provider.requests[0].messages[-1].content == "Typed message"
     assert "Jarvis > Typed reply" in output
+
+
+def test_stt_status_is_local_and_reports_selected_model(tmp_path):
+    provider = Provider([])
+    voice = FakeVoice()
+    executable = (tmp_path / "whisper-cli.exe").resolve()
+    model = (tmp_path / "ggml-base.bin").resolve()
+    executable.write_bytes(b"exe")
+    model.write_bytes(b"model")
+    voice.stt = WhisperCppSTT(
+        WhisperCppSettings(
+            executable,
+            model,
+            (tmp_path / "stt").resolve(),
+            model_name="base",
+            language="auto",
+            use_gpu=False,
+        )
+    )
+    output = []
+
+    result = run_chat(
+        make_service(provider),
+        voice_runtime=voice,
+        input_fn=inputs(["/stt status", "/quit"]),
+        output_fn=output.append,
+    )
+
+    assert result == 0
+    assert provider.requests == []
+    status = next(line for line in output if line.startswith("STT provider:"))
+    assert "Version: 1.9.1" in status
+    assert "Model: base" in status
+    assert "Backend: CPU" in status
+    assert "Language: auto" in status
+    assert "Ready: yes" in status

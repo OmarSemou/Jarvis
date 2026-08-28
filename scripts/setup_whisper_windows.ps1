@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param()
+param(
+    [ValidateSet("base", "small", "all")]
+    [string[]]$Models = @("base")
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -8,8 +11,16 @@ $WhisperArchiveUrl = "https://github.com/ggml-org/whisper.cpp/releases/download/
 $WhisperArchiveSha256 = "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539"
 
 $ModelRevision = "c521a4b02f422512d734391fdf08bb08c0862f68"
-$ModelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/$ModelRevision/ggml-small.bin?download=true"
-$ModelSha256 = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+$ModelDefinitions = @{
+    base = @{
+        Url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/$ModelRevision/ggml-base.bin?download=true"
+        Sha256 = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+    }
+    small = @{
+        Url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/$ModelRevision/ggml-small.bin?download=true"
+        Sha256 = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+    }
+}
 
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $DataRoot = Join-Path $RepositoryRoot "data"
@@ -17,7 +28,6 @@ $DownloadRoot = Join-Path $DataRoot "downloads"
 $WhisperRoot = Join-Path $DataRoot "tools\whisper.cpp\$WhisperVersion"
 $ModelRoot = Join-Path $DataRoot "models\whisper"
 $ArchivePath = Join-Path $DownloadRoot "whisper-$WhisperVersion-bin-x64.zip"
-$ModelPath = Join-Path $ModelRoot "ggml-small.bin"
 $ExecutablePath = Join-Path $WhisperRoot "Release\whisper-cli.exe"
 
 function Get-VerifiedDownload {
@@ -82,15 +92,24 @@ if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
     throw "Extraction completed but whisper-cli.exe was not found at $ExecutablePath"
 }
 
-Get-VerifiedDownload `
-    -Uri $ModelUrl `
-    -Destination $ModelPath `
-    -ExpectedSha256 $ModelSha256 `
-    -Label "multilingual Whisper small ggml model"
+$SelectedModels = if ($Models -contains "all") { @("base", "small") } else { $Models }
+$InstalledModelPaths = @()
+foreach ($ModelName in $SelectedModels | Select-Object -Unique) {
+    $Definition = $ModelDefinitions[$ModelName]
+    $ModelPath = Join-Path $ModelRoot "ggml-$ModelName.bin"
+    Get-VerifiedDownload `
+        -Uri $Definition.Url `
+        -Destination $ModelPath `
+        -ExpectedSha256 $Definition.Sha256 `
+        -Label "multilingual Whisper $ModelName ggml model"
+    $InstalledModelPaths += $ModelPath
+}
 
 Write-Host ""
 Write-Host "Jarvis whisper.cpp setup complete."
 Write-Host "Executable: $ExecutablePath"
-Write-Host "Model:      $ModelPath"
-Write-Host "Backend:    official Windows x64 CPU build (GPU disabled in Phase 2C1)"
+foreach ($InstalledModelPath in $InstalledModelPaths) {
+    Write-Host "Model:      $InstalledModelPath"
+}
+Write-Host "Backend:    official Windows x64 CPU build (GPU disabled in Phase 2C1.1)"
 Write-Host "No global PATH or system installation was modified."
