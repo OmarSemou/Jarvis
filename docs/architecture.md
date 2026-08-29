@@ -16,8 +16,9 @@ restores general conversational scope. Phase 2C3.2 adds provider-neutral
 sentence chunking, bounded PCM lookahead, and early ordered playback after the
 final tool-safe response is committed. The upstream `agent.py` remains the
 compatibility launcher. Streaming STT/LLM text, full echo cancellation, camera
-capture, memory storage, physical hardware, and Tkinter orchestration remain
-outside the new path until later phases.
+capture, memory storage, and physical hardware remain outside the new path.
+Phase 2D adds an observation-only animated face using the existing BMO artwork
+as a read-only desktop prototype.
 
 Importing any `jarvis` module must not start a GUI, open devices, invoke
 subprocesses, perform network requests, or write files. Ollama transport is
@@ -25,6 +26,23 @@ created only by an explicit CLI command, and requests are sent only by chat or
 `llm-check` actions. `sounddevice` is loaded only when an explicit microphone
 command runs, and `whisper.cpp` is invoked only after a completed recording, an
 explicit `stt-check`, or the explicit local `stt-benchmark`.
+
+## Phase 2D face path
+
+```text
+VoiceStateMachine / playback generation / simulated robot state
+  -> FaceController (immutable activity, expression, gaze snapshots)
+  -> FaceAssetSet (explicit read-only BMO PNG allowlist)
+  -> TkinterFaceView (main-thread-only rendering)
+```
+
+The controller is an observer, not an authority: it cannot call tools, move a
+robot, change safety state, access audio/camera data, or influence the LLM.
+The view is optional and lazy. Voice mode keeps Tk on the main thread while
+the coordinator runs in a worker; closing the window requests clean shutdown.
+Speaking begins only after playback reports first audio, and stale generation
+events are ignored. See [face.md](face.md) for the complete inventory and
+provenance warning.
 
 ## Phase 2B text and tool path
 
@@ -398,11 +416,14 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.robot.interfaces`: post-safety controller and movement-lease contracts.
 - `jarvis.robot.controller`: safety-gated semantic simulator controller.
 - `jarvis.robot.simulator`: deterministic in-memory robot state and event log.
+- `jarvis.face.state`: provider-neutral activity, expression, gaze, and snapshots.
+- `jarvis.face.assets`: explicit read-only prototype asset inventory and fallback mapping.
+- `jarvis.face.controller`: queued observation boundary with generation-safe playback events.
+- `jarvis.face.view`: GUI-independent face view protocol.
+- `jarvis.face.tkinter_view`: lazy, resizable, aspect-preserving Tk renderer.
+- `jarvis.face.demo`: explicit face and gallery developer command.
 
 Future modules may add streaming/early STT, safe LLM text streaming, real AEC,
-memory, a separate Jarvis face, vision, external integrations, physical robot
-components, and ESP32 transport. None of those features is part of Phase
-2C3.2. The original BMO face/image assets remain untouched as historical and
-design reference; they must not be removed, overwritten, renamed, replaced, or
-made the primary Jarvis face without explicit user approval. Microphone/STT/TTS
-testing and the robot simulator are not hardware safety validation.
+memory, a separately licensed final Jarvis face, vision, external integrations,
+physical robot components, and ESP32 transport. Microphone/STT/TTS testing, the
+simulator, and the face are not hardware safety validation.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -139,6 +140,7 @@ class VoiceModeCoordinator:
         latency: LatencyHistory | None = None,
         output_fn: OutputFunction = print,
         clock: Clock = perf_counter,
+        speech_activity_sink: Callable[[str, int], None] | None = None,
     ) -> None:
         self.source = source
         self.wakeword = wakeword
@@ -154,8 +156,29 @@ class VoiceModeCoordinator:
         self.latency = latency or LatencyHistory()
         self.output_fn = output_fn
         self.clock = clock
+        self.speech_activity_sink = speech_activity_sink
         self._wake_buffer = bytearray()
         self._pending_wake_handoff: WakeAudioHandoff | None = None
+        self._shutdown_requested = threading.Event()
+
+    def request_shutdown(self) -> None:
+        """Request a clean stop from a UI thread without changing safety state."""
+
+        self._shutdown_requested.set()
+        try:
+            self.tts.stop()
+        finally:
+            self.source.stop()
+
+    def _emit_speech_activity(self, kind: str, handle: object) -> None:
+        generation_id = getattr(handle, "generation_id", None)
+        if self.speech_activity_sink is None or not isinstance(generation_id, int):
+            return
+        try:
+            self.speech_activity_sink(kind, generation_id)
+        except Exception:
+            # Observation/UI hooks are never part of voice authority.
+            pass
 
     def _reset_detection_state(self) -> None:
         """Clear provider state and partial wake chunks, never microphone audio."""
@@ -228,7 +251,10 @@ class VoiceModeCoordinator:
         )
         score_peak = 0.0
         score_window_started = self.clock()
-        while self.state.current is VoiceInteractionState.IDLE:
+        while (
+            self.state.current is VoiceInteractionState.IDLE
+            and not self._shutdown_requested.is_set()
+        ):
             try:
                 frame = self.source.read(timeout_seconds=1.0)
             except RealtimeAudioTimeoutError:
@@ -263,6 +289,8 @@ class VoiceModeCoordinator:
                     self.state.transition(VoiceInteractionState.WAKE_DETECTED)
                     self.output_fn(f"[VOICE] Wake detected (score={detection.score:.3f}).")
                     return detected_at
+        if self._shutdown_requested.is_set():
+            raise VoiceCoordinatorError("Voice mode was closed by the face window.")
         raise VoiceCoordinatorError("Voice mode left idle unexpectedly.")
 
     def _capture(self) -> UtteranceCapture:
@@ -358,6 +386,7 @@ class VoiceModeCoordinator:
                 # already-running microphone stream. No drain, restart, or
                 # cancellation wait is allowed between them.
                 handle.stop()
+                self._emit_speech_activity("cancelled", handle)
                 self.state.transition(VoiceInteractionState.INTERRUPTED)
                 self.output_fn("[VOICE] Wake detected; listening...")
                 self._reset_detection_state()
@@ -435,6 +464,7 @@ class VoiceModeCoordinator:
             if not gate.process(frame, elapsed_ms):
                 continue
             handle.stop()
+            self._emit_speech_activity("cancelled", handle)
             handle.wait(1.0)
             self.state.transition(VoiceInteractionState.INTERRUPTED)
             if self.settings.debug_latency:
@@ -539,6 +569,7 @@ class VoiceModeCoordinator:
 
         if handle.started_at is not None:
             self.state.transition(VoiceInteractionState.SPEAKING)
+            self._emit_speech_activity("started", handle)
             audio_started = max(handle.started_at, assistant_ready)
             tracker.mark("playback_started", audio_started)
             tracker.mark("first_audio_started", audio_started)
@@ -576,6 +607,7 @@ class VoiceModeCoordinator:
         # otherwise. Barge-in returns earlier with its separately gated frames.
         self.source.drain()
         self._reset_detection_state()
+        self._emit_speech_activity("stopped", handle)
         self.state.transition(VoiceInteractionState.IDLE)
         return None
 
@@ -669,6 +701,8 @@ class VoiceModeCoordinator:
             self._startup()
             self.output_fn("Listening for wake word...")
             while max_interactions is None or completed < max_interactions:
+                if self._shutdown_requested.is_set():
+                    return 0
                 wake_at = self._wait_for_wake()
                 capture = self._capture()
                 while True:
@@ -685,6 +719,8 @@ class VoiceModeCoordinator:
             self.output_fn("\n[VOICE] Interrupted.")
             return 130
         except (VoiceCoordinatorError, VoiceInputError, LLMError, ValueError) as exc:
+            if self._shutdown_requested.is_set():
+                return 0
             self.output_fn(f"Voice mode error: {exc}")
             self.state.fail_to_idle()
             return 1

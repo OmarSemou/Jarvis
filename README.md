@@ -3,7 +3,8 @@
 Jarvis is becoming a fully local, API-free personal companion robot. The
 repository now includes the **Phase 1 architecture and safety foundation**,
 **Phase 2A local text conversation**, **Phase 2B structured robot tools with a
-deterministic simulator**, and **Phase 2C3.2 responsive local voice interaction**
+deterministic simulator**, **Phase 2C3.2 responsive local voice interaction**,
+and **Phase 2D animated face prototype**
 for Windows 11. Continuous listening is an explicitly enabled local wake-word
 mode; Jarvis does not control a physical robot.
 
@@ -69,6 +70,8 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
 - Lossless bounded pre-roll for both normal wake activation and wake-gated
   playback interruption, with score and frame-continuity diagnostics.
 - A conservative, configurable Ollama conversation temperature of `0.2`.
+- An observation-only, resizable Tk face using the unchanged BMO prototype
+  PNGs, with lifecycle animation and generation-safe playback state.
 
 The existing `agent.py` remains a compatibility launcher. Phase 2C3.2 does not
 reuse its legacy last-stdout-line Whisper parsing or GUI audio thread. Wake
@@ -114,6 +117,9 @@ configuration, start local hands-free interaction with:
 ```powershell
 .\.venv\Scripts\python.exe -m jarvis voice
 .\.venv\Scripts\python.exe -m jarvis voice --debug-latency
+.\.venv\Scripts\python.exe -m jarvis face
+.\.venv\Scripts\python.exe -m jarvis face-demo --gallery
+.\.venv\Scripts\python.exe -m jarvis voice --face
 ```
 
 The active classifier is the pinned official OpenWakeWord **Hey Jarvis** model
@@ -362,9 +368,9 @@ explicit acceleration decision.
 
 ## Not implemented yet
 
-Full acoustic echo cancellation, streaming STT, LLM token streaming, a Jarvis
-face GUI, camera/vision, web search, persistent memory, ESP32 communication,
-motors, servos, and physical movement are not part of Phase 2C3.2. Raspberry Pi
+Full acoustic echo cancellation, streaming STT, LLM token streaming, camera/
+vision, web search, persistent memory, ESP32 communication,
+motors, servos, and physical movement are not part of Phase 2D. Raspberry Pi
 deployment comes after desktop and simulator validation.
 
 ## Legacy files
@@ -373,10 +379,8 @@ deployment comes after desktop and simulator validation.
 for upstream history and later Linux migration. They are Raspberry-Pi/Linux
 specific and are not the Windows Phase 1 setup path.
 
-Existing faces, sounds, and `wakeword.onnx` are also retained unchanged. In
-particular, the original BMO face/image assets are intentional historical and
-design references: do not delete, overwrite, rename, replace, optimize away, or
-repurpose them as Jarvis's primary face without explicit user approval. A future
-Jarvis face will be a separate implementation. Asset licensing/provenance is not
-fully resolved by the repository MIT license; see [NOTICE.md](NOTICE.md) before
-redistributing them.
+Existing faces, sounds, and `wakeword.onnx` are retained unchanged. Phase 2D
+uses the original BMO face/image assets as a private, read-only prototype face;
+they are not the final Jarvis design and must not be redistributed until their
+individual provenance/licensing is resolved. See [docs/face.md](docs/face.md)
+and [NOTICE.md](NOTICE.md).

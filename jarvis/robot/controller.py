@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .intents import RobotAction, RobotIntent
@@ -59,10 +60,26 @@ def simulated_safe_snapshot() -> SafetySnapshot:
 class SafeRobotController:
     """The sole tool-facing path into safety evaluation and the simulator."""
 
-    def __init__(self, supervisor: SafetySupervisor, simulator: SimulatedRobot) -> None:
+    def __init__(
+        self,
+        supervisor: SafetySupervisor,
+        simulator: SimulatedRobot,
+        *,
+        state_sink: Callable[[SimulatedRobotState], None] | None = None,
+    ) -> None:
         self._supervisor = supervisor
         self._simulator = simulator
+        self._state_sink = state_sink
         self._simulator.sync_emergency_stop(supervisor.emergency_stop_latched)
+
+    def _notify_state(self) -> None:
+        if self._state_sink is None:
+            return
+        try:
+            self._state_sink(self._simulator.state)
+        except Exception:
+            # Face/UI observation must never alter robot authority or execution.
+            pass
 
     @property
     def safety(self) -> SafetySupervisor:
@@ -77,30 +94,43 @@ class SafeRobotController:
         decision = self._supervisor.evaluate(intent)
         self._simulator.sync_emergency_stop(self._supervisor.emergency_stop_latched)
         if not decision.allowed or decision.approved is None:
+            self._notify_state()
             return RobotExecution(False, decision.message, decision.reason.value)
         try:
             self._simulator.execute(decision.approved)
         except Exception:
             self._simulator.stop()
+            self._notify_state()
             return RobotExecution(
                 False,
                 "simulator execution failed safely",
                 "controller_execution_failed",
             )
+        self._notify_state()
         return RobotExecution(True, _SUCCESS_MESSAGES[intent.action])
 
     def latch_emergency_stop(self, *, authority: SafetyAuthority) -> SafetyTransition:
         transition = self._supervisor.latch_emergency_stop(authority=authority)
         self._simulator.stop()
         self._simulator.sync_emergency_stop(self._supervisor.emergency_stop_latched)
+        self._notify_state()
         return transition
 
     def reset_emergency_stop(self, *, authority: SafetyAuthority) -> SafetyTransition:
         transition = self._supervisor.request_emergency_stop_reset(authority=authority)
         self._simulator.sync_emergency_stop(self._supervisor.emergency_stop_latched)
+        self._notify_state()
         return transition
 
 
-def create_simulated_controller(*, event_sink: EventSink | None = None) -> SafeRobotController:
+def create_simulated_controller(
+    *,
+    event_sink: EventSink | None = None,
+    state_sink: Callable[[SimulatedRobotState], None] | None = None,
+) -> SafeRobotController:
     supervisor = SafetySupervisor(simulated_safe_snapshot())
-    return SafeRobotController(supervisor, SimulatedRobot(event_sink=event_sink))
+    return SafeRobotController(
+        supervisor,
+        SimulatedRobot(event_sink=event_sink),
+        state_sink=state_sink,
+    )

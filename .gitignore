@@ -9,6 +9,8 @@ venv/
 .venv/
 .env
 .pytest_cache/
+.pytest-temp*/
+.pytest-full/
 .coverage
 htmlcov/
 build/

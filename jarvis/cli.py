@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,10 +55,15 @@ from jarvis.audio.voice.coordinator import (
     VoiceModeCoordinator,
     VoiceModeSettings,
 )
+from jarvis.audio.voice.state import VoiceStateMachine
 from jarvis.audio.wake.openwakeword import OpenWakeWord, OpenWakeWordSettings, WAKE_PHRASE
 from jarvis.core.config import ConfigValidationError, JarvisConfig, load_for_paths
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.core.paths import JarvisPaths
+from jarvis.face.assets import default_bmo_asset_set
+from jarvis.face.controller import FaceController
+from jarvis.face.demo import FaceDemoSettings, run_face_demo
+from jarvis.face.tkinter_view import TkinterFaceView
 from jarvis.llm.base import (
     ChatMessage,
     LLMError,
@@ -155,8 +161,12 @@ def create_stt_provider(
     )
 
 
-def create_robot_runtime(*, output_fn: OutputFunction | None = None) -> RobotRuntime:
-    controller = create_simulated_controller(event_sink=output_fn)
+def create_robot_runtime(
+    *,
+    output_fn: OutputFunction | None = None,
+    state_sink: Callable[[object], None] | None = None,
+) -> RobotRuntime:
+    controller = create_simulated_controller(event_sink=output_fn, state_sink=state_sink)
     return RobotRuntime(controller, RobotToolPolicy(RobotToolRegistry(), controller))
 
 
@@ -208,6 +218,8 @@ def create_voice_mode_coordinator(
     robot_controller: SafeRobotController | None = None,
     output_fn: OutputFunction = print,
     debug_latency: bool = False,
+    state: VoiceStateMachine | None = None,
+    speech_activity_sink: Callable[[str, int], None] | None = None,
 ) -> VoiceModeCoordinator:
     source = SoundDeviceRealtimeInput(
         voice_input.devices,
@@ -258,6 +270,8 @@ def create_voice_mode_coordinator(
             ),
             debug_latency=debug_latency or config.voice_debug_latency,
         ),
+        state=state,
+        speech_activity_sink=speech_activity_sink,
         output_fn=output_fn,
     )
 
@@ -690,7 +704,7 @@ def chat_command(output_fn: OutputFunction = print) -> int:
         voice = create_voice_runtime(config, paths)
         tts = create_tts_runtime(config, paths)
         service = create_conversation(config, tool_executor=runtime.tools)
-    except (ConfigValidationError, ValueError) as exc:
+    except (ConfigValidationError, ImportError, OSError, RuntimeError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
         return 2
     try:
@@ -705,9 +719,72 @@ def chat_command(output_fn: OutputFunction = print) -> int:
         service.close()
 
 
+def face_command(
+    *,
+    fullscreen: bool = False,
+    output_fn: OutputFunction = print,
+) -> int:
+    """Show the current read-only BMO prototype face."""
+
+    try:
+        assets = default_bmo_asset_set()
+        controller = FaceController(assets)
+        view = TkinterFaceView(controller, assets, fullscreen=fullscreen)
+        output_fn("Face: BMO prototype")
+        view.run()
+        return 0
+    except Exception as exc:
+        output_fn(f"Face unavailable: {exc}")
+        return 2
+
+
+def face_demo_command(
+    *,
+    fullscreen: bool = False,
+    gallery: bool = False,
+    output_fn: OutputFunction = print,
+) -> int:
+    try:
+        return run_face_demo(
+            settings=FaceDemoSettings(fullscreen=fullscreen, gallery=gallery),
+            output_fn=output_fn,
+        )
+    except Exception as exc:
+        output_fn(f"Face demo unavailable: {exc}")
+        return 2
+
+
+def _run_voice_with_face(
+    coordinator: VoiceModeCoordinator,
+    view: TkinterFaceView,
+) -> int:
+    """Keep Tk on the main thread while voice inference runs in a worker."""
+
+    result = [1]
+
+    def worker() -> None:
+        try:
+            result[0] = coordinator.run()
+        finally:
+            view.request_close()
+
+    thread = threading.Thread(target=worker, name="jarvis-voice", daemon=True)
+    thread.start()
+    try:
+        view.run()
+    except KeyboardInterrupt:
+        coordinator.request_shutdown()
+    finally:
+        coordinator.request_shutdown()
+        thread.join(timeout=5.0)
+    return result[0] if not thread.is_alive() else 1
+
+
 def voice_command(
     *,
     debug_latency: bool = False,
+    face: bool = False,
+    fullscreen: bool = False,
     output_fn: OutputFunction = print,
 ) -> int:
     """Run local continuous wake/VAD/conversation/speech mode."""
@@ -732,7 +809,23 @@ def voice_command(
             output_fn("Voice mode unavailable: local TTS is disabled.")
             return 2
 
-        robot = create_robot_runtime(output_fn=output_fn)
+        face_controller: FaceController | None = None
+        face_view: TkinterFaceView | None = None
+        face_state: VoiceStateMachine | None = None
+        if face:
+            assets = default_bmo_asset_set()
+            face_controller = FaceController(assets)
+            face_state = VoiceStateMachine(on_transition=face_controller.observe_voice_state)
+            face_view = TkinterFaceView(
+                face_controller,
+                assets,
+                fullscreen=fullscreen,
+                on_close=lambda: None,
+            )
+        robot = create_robot_runtime(
+            output_fn=output_fn,
+            state_sink=(face_controller.observe_robot_state if face_controller else None),
+        )
         voice_input = create_voice_runtime(config, paths)
         tts = create_tts_runtime(config, paths)
         service = create_conversation(
@@ -749,6 +842,10 @@ def voice_command(
             robot_controller=robot.controller,
             output_fn=output_fn,
             debug_latency=debug_latency,
+            state=face_state,
+            speech_activity_sink=(
+                face_controller.observe_playback_event if face_controller else None
+            ),
         )
         output_fn("Jarvis Voice")
         output_fn(
@@ -760,10 +857,18 @@ def voice_command(
         output_fn(f"Voice: {tts.provider} / {tts.voice}")
         barge_status = config.barge_in_mode if config.barge_in_enabled else "disabled"
         output_fn(f"Barge-in: {barge_status}")
+        if face:
+            output_fn("Face: BMO prototype")
         output_fn("Preparing local voice models...")
+        if face_view is not None:
+            face_view.on_close = coordinator.request_shutdown
+            return _run_voice_with_face(coordinator, face_view)
         return coordinator.run()
-    except (ConfigValidationError, ValueError) as exc:
+    except (ConfigValidationError, ImportError, OSError, RuntimeError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
+        return 2
+    except Exception as exc:
+        output_fn(f"Voice mode unavailable: {exc}")
         return 2
     finally:
         if service is not None:
@@ -1000,6 +1105,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print structured timing for each completed voice interaction",
     )
+    voice_parser.add_argument(
+        "--face",
+        action="store_true",
+        help="show the animated prototype face while voice mode runs",
+    )
+    voice_parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="use fullscreen for the optional face view",
+    )
+    face_parser = subparsers.add_parser(
+        "face", help="show the read-only BMO prototype face"
+    )
+    face_parser.add_argument("--fullscreen", action="store_true")
+    demo_parser = subparsers.add_parser(
+        "face-demo", help="cycle the animated prototype face"
+    )
+    demo_parser.add_argument("--fullscreen", action="store_true")
+    demo_parser.add_argument(
+        "--gallery", action="store_true", help="show the asset gallery label"
+    )
     subparsers.add_parser("llm-check", help="explicitly test the configured local Ollama model")
     stt_parser = subparsers.add_parser(
         "stt-check", help="record and transcribe once without an LLM call"
@@ -1041,7 +1167,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "chat":
         return chat_command()
     if args.command == "voice":
-        return voice_command(debug_latency=args.debug_latency)
+        return voice_command(
+            debug_latency=args.debug_latency,
+            face=args.face,
+            fullscreen=args.fullscreen,
+        )
+    if args.command == "face":
+        return face_command(fullscreen=args.fullscreen)
+    if args.command == "face-demo":
+        return face_demo_command(fullscreen=args.fullscreen, gallery=args.gallery)
     if args.command == "llm-check":
         return llm_check_command()
     if args.command == "stt-check":
