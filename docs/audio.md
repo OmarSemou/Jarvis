@@ -1,4 +1,4 @@
-# Phase 2C3 correctness-cleanup local voice interaction
+# Phase 2C3.2 responsive local voice and early speech
 
 Jarvis supports both the preserved `/talk` developer path and an explicitly
 enabled continuous local voice mode. Continuous mode listens for a local
@@ -378,7 +378,9 @@ but Jarvis never starts Ollama or pulls a model automatically.
 Use `python -m jarvis voice --debug-latency` or set
 `voice_debug_latency=true` to print real monotonic timings for wake-to-speech,
 utterance duration, end detection, STT, LLM/tools, TTS, playback start, and
-speech-end-to-audio-start, wake-to-playback-cancel, and STT-to-local-stop.
+speech-end-to-audio-start, wake-to-playback-cancel, and STT-to-local-stop. It
+also distinguishes assistant-text-ready, first speech chunk, first actual
+audio, and eventual full TTS generation, with queued and played chunk counts.
 While waiting for the wake phrase, debug mode prints
 only a one-second rolling score peak and the configured threshold; it never
 logs room audio. Normal voice mode does not print these diagnostics.
@@ -403,8 +405,54 @@ punctuation spacing. It never renders Markdown, fetches a link, opens a URL,
 executes code, or touches the filesystem.
 
 All normal assistant speech and the fixed local “Stopped.” acknowledgement pass
-through this boundary. Streaming generation, sentence queues, early playback,
-and parallel synthesis remain deferred to Phase 2C3.2.
+through this boundary. `SpeechChunker` then finds natural sentence, question,
+exclamation, paragraph, and list boundaries while protecting common decimals,
+abbreviations, and initials. A 220-character fallback prefers clause punctuation
+and then whitespace, and never intentionally drops or duplicates speech text.
+
+## Phase 2C3.2 sentence synthesis and queued playback
+
+After the complete final assistant text is committed, `SpeechPipeline` assigns
+a monotonic generation ID and starts a bounded producer/consumer path:
+
+```text
+final assistant Markdown
+  -> prepare_text_for_speech
+  -> ordered semantic SpeechChunk values
+  -> Kokoro create_stream (or one-shot Piper sentence synthesis)
+  -> two-slot provider-neutral PCM16 queue
+  -> one continuous, strictly ordered RawOutputStream
+```
+
+The first usable PCM chunk starts playback immediately; the producer prepares
+later chunks while earlier audio plays. A two-item queue is the default and
+hard-limited to one through three, so fast synthesis blocks under backpressure
+instead of building an answer-sized PCM buffer. Kokoro's pinned 0.6.1 async
+stream API is fully contained in its adapter. Piper remains functional by
+returning one PCM chunk for each semantic sentence. Normal response audio is
+ephemeral and never written to disk.
+
+Wake-barge cancellation latches the generation token, aborts current playback,
+empties queued PCM, and stops future enqueue/sentence work. If an ONNX inference
+already running cannot stop immediately, playback cancellation does not wait for
+it; the late result is discarded. A subsequent response uses a newer ID, so old
+audio cannot cross turn boundaries. Kokoro and Piper inference calls are also
+serialized per provider to protect their shared loaded engines.
+
+No Ollama token streaming is enabled in this phase. The initial request remains
+tool-capable and completes its native structured tool/safety loop before speech.
+This prevents a speculative sentence from contradicting a tool result or
+`SafetySupervisor` denial while still removing the full-response TTS wait.
+
+On the Phase 2C3.2 Windows workstation acceptance run, the real local
+Qwen-to-Kokoro-to-Jabra text path measured first-chunk versus eventual TTS
+generation as 1.35 s versus 23.04 s for the combustion-engine answer, 2.48 s
+versus 72.16 s for the Roman Empire answer, and 1.13 s versus 67.29 s for the
+Xbox Series X answer. Their generated speech durations were 42.67 s, 99.50 s,
+and 99.69 s respectively. These are machine-specific provider/pipeline values,
+not fabricated full voice-turn measurements: endpoint, microphone STT, and
+speech-end-to-audio timing still require a person to perform the documented
+`voice --debug-latency` acceptance run.
 
 Normal conversation uses validated Ollama temperature `0.2` by default, with
 thinking still off. This is a conservative factual-assistant setting; it does

@@ -5,7 +5,7 @@ from __future__ import annotations
 from .profile import DEFAULT_JARVIS_PROFILE, PersonalityProfile
 
 
-IMMUTABLE_SYSTEM_POLICY = """You are operating as Jarvis's fully local Phase 2C3.1 conversation service.
+IMMUTABLE_SYSTEM_POLICY = """You are operating as Jarvis's fully local Phase 2C3.2 conversation service.
 The explicitly listed structured tools are optional action mechanisms for a safe simulated robot;
 they do not define or limit what subjects you can discuss. For normal questions, answer normally
 from your available general knowledge. The absence of a robot tool never means you cannot explain

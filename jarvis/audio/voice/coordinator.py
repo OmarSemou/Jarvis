@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from time import perf_counter
+from typing import Any, Protocol
 
 from jarvis.audio.realtime import (
     RealtimeAudioFrame,
@@ -15,7 +16,7 @@ from jarvis.audio.realtime import (
     RollingAudioFrameBuffer,
 )
 from jarvis.audio.service import VoiceInputError, VoiceInputService
-from jarvis.audio.tts.playback import PlaybackErrorCode, PlaybackHandle
+from jarvis.audio.tts.playback import PlaybackErrorCode
 from jarvis.audio.tts.service import TTSService
 from jarvis.audio.vad.base import VADProvider
 from jarvis.audio.vad.segmenter import (
@@ -46,6 +47,23 @@ OutputFunction = Callable[[str], None]
 Clock = Callable[[], float]
 WAKE_SCORE_REPORT_SECONDS = 1.0
 PLAYBACK_CANCEL_TARGET_SECONDS = 0.5
+
+
+class CancellableSpeechHandle(Protocol):
+    @property
+    def done(self) -> bool: ...
+
+    @property
+    def started_at(self) -> float | None: ...
+
+    @property
+    def finished_at(self) -> float | None: ...
+
+    def wait_started(self, timeout_seconds: float | None = None) -> bool: ...
+
+    def wait(self, timeout_seconds: float | None = None) -> Any | None: ...
+
+    def stop(self) -> None: ...
 
 
 class BargeInMode(StrEnum):
@@ -293,7 +311,7 @@ class VoiceModeCoordinator:
 
     def _wakeword_barge_capture(
         self,
-        handle: PlaybackHandle,
+        handle: CancellableSpeechHandle,
         tracker: VoiceLatencyTracker,
     ) -> VoiceInterruption | None:
         """Require the local wake phrase before playback may be cancelled."""
@@ -395,7 +413,7 @@ class VoiceModeCoordinator:
 
     def _experimental_vad_barge_capture(
         self,
-        handle: PlaybackHandle,
+        handle: CancellableSpeechHandle,
     ) -> VoiceInterruption | None:
         """Retain the former VAD-only behavior behind an explicit opt-in."""
 
@@ -436,7 +454,7 @@ class VoiceModeCoordinator:
 
     def _barge_capture(
         self,
-        handle: PlaybackHandle,
+        handle: CancellableSpeechHandle,
         tracker: VoiceLatencyTracker,
     ) -> VoiceInterruption | None:
         if not self.settings.barge_in_enabled:
@@ -451,24 +469,79 @@ class VoiceModeCoordinator:
         text: str,
         tracker: VoiceLatencyTracker,
     ) -> VoiceInterruption | None:
-        tracker.mark("tts_start")
-        synthesis = self.tts.synthesize(text)
-        tracker.mark("tts_end")
-        if not synthesis.success or synthesis.audio is None:
-            detail = synthesis.error.message if synthesis.error is not None else "unknown failure"
+        speech_end = tracker.timestamp("speech_end") or 0.0
+        assistant_ready = tracker.mark(
+            "assistant_text_ready", max(self.clock(), speech_end)
+        )
+        tracker.mark("tts_start", assistant_ready)
+        self.source.drain()
+        self._pending_wake_handoff = None
+        self._reset_detection_state()
+        start_speech = getattr(self.tts, "start_speech", None)
+        if callable(start_speech):
+            handle = start_speech(text, assistant_text_ready=assistant_ready)
+        else:
+            # Backward-compatible seam for small injected test doubles. The
+            # production TTSService always takes the bounded pipeline above.
+            synthesis = self.tts.synthesize(text)
+            tracker.mark("tts_end", max(self.clock(), assistant_ready))
+            if not synthesis.success or synthesis.audio is None:
+                detail = (
+                    synthesis.error.message
+                    if synthesis.error is not None
+                    else "unknown failure"
+                )
+                self.output_fn(
+                    f"Voice output error: {detail}. Text response remains available."
+                )
+                self.state.transition(VoiceInteractionState.IDLE)
+                return None
+            tracker.mark("playback_requested", max(self.clock(), assistant_ready))
+            handle = self.tts.start_playback(synthesis.audio)
+
+        def has_started() -> bool:
+            return bool(
+                getattr(
+                    handle,
+                    "started",
+                    getattr(handle, "started_at", None) is not None,
+                )
+            )
+
+        while not has_started() and not handle.done:
+            handle.wait_started(0.1)
+        pipeline_metrics = getattr(handle, "metrics", None)
+        if pipeline_metrics is not None:
+            if pipeline_metrics.first_chunk_ready is not None:
+                first_chunk_ready = max(
+                    pipeline_metrics.first_chunk_ready, assistant_ready
+                )
+                tracker.mark(
+                    "first_chunk_ready",
+                    first_chunk_ready,
+                )
+                tracker.mark("playback_requested", first_chunk_ready)
+            if pipeline_metrics.generation_finished is not None:
+                generation_finished = max(
+                    pipeline_metrics.generation_finished, assistant_ready
+                )
+                tracker.mark("tts_end", generation_finished)
+                tracker.mark("tts_generation_finished", generation_finished)
+            tracker.set_count("queued_chunks", pipeline_metrics.queued_chunks)
+            tracker.set_count("played_chunks", pipeline_metrics.played_chunks)
+
+        if not has_started():
+            failed = handle.wait(1.0)
+            detail = getattr(failed, "error_message", None) or "unknown local speech failure"
             self.output_fn(f"Voice output error: {detail}. Text response remains available.")
             self.state.transition(VoiceInteractionState.IDLE)
             return None
 
-        self.source.drain()
-        self._pending_wake_handoff = None
-        self._reset_detection_state()
-        self.state.transition(VoiceInteractionState.SPEAKING)
-        tracker.mark("playback_requested")
-        handle = self.tts.start_playback(synthesis.audio)
-        handle.wait_started(1.0)
         if handle.started_at is not None:
-            tracker.mark("playback_started", handle.started_at)
+            self.state.transition(VoiceInteractionState.SPEAKING)
+            audio_started = max(handle.started_at, assistant_ready)
+            tracker.mark("playback_started", audio_started)
+            tracker.mark("first_audio_started", audio_started)
 
         interruption = self._barge_capture(handle, tracker)
         if interruption is not None:
@@ -480,10 +553,24 @@ class VoiceModeCoordinator:
             result = handle.wait(1.0)
         if result is None:
             raise VoiceCoordinatorError("Local speech playback did not stop cleanly.")
+        pipeline_metrics = getattr(handle, "metrics", None)
+        if pipeline_metrics is not None:
+            if pipeline_metrics.generation_finished is not None:
+                generation_finished = max(
+                    pipeline_metrics.generation_finished, assistant_ready
+                )
+                tracker.mark("tts_end", generation_finished)
+                tracker.mark("tts_generation_finished", generation_finished)
+            tracker.set_count("queued_chunks", pipeline_metrics.queued_chunks)
+            tracker.set_count("played_chunks", pipeline_metrics.played_chunks)
+        playback_result = getattr(result, "playback", result)
+        playback_error = getattr(playback_result, "error", None)
         if not result.success and (
-            result.error is None or result.error.code is not PlaybackErrorCode.INTERRUPTED
+            playback_error is None or playback_error.code is not PlaybackErrorCode.INTERRUPTED
         ):
-            detail = result.error.message if result.error is not None else "unknown failure"
+            detail = getattr(result, "error_message", None)
+            if detail is None:
+                detail = playback_error.message if playback_error is not None else "unknown failure"
             self.output_fn(f"Voice output error: {detail}. Text response remains available.")
         # Audio accumulated during known playback is self-speech until proven
         # otherwise. Barge-in returns earlier with its separately gated frames.

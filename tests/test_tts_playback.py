@@ -204,3 +204,23 @@ def test_background_playback_is_chunked_for_bounded_cancel_latency():
     assert len(writes) == 10
     assert all(len(chunk) <= 400 for chunk in writes)
     assert b"".join(writes) == audio.pcm16
+
+
+def test_lazy_audio_sequence_uses_one_stream_and_preserves_exact_order():
+    module = Module()
+    playback = AudioPlaybackService(module_loader=lambda: module)
+    first = SynthesizedAudio(b"\x01\x00" * 10, 24_000)
+    second = SynthesizedAudio(b"\x02\x00" * 10, 24_000)
+    played = []
+
+    handle = playback.start_sequence(
+        iter((first, second)),
+        on_chunk_played=played.append,
+    )
+    result = handle.wait(1)
+
+    assert result is not None and result.success
+    assert len(module.streams) == 1
+    writes = [event[1] for event in module.streams[0].events if isinstance(event, tuple)]
+    assert writes == [first.pcm16, second.pcm16]
+    assert played == [first, second]

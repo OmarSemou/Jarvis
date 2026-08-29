@@ -26,8 +26,14 @@ def test_structured_latency_fields_are_calculated_from_real_event_times():
         ("barge_wake", 5.0),
         ("playback_cancelled", 5.3),
         ("local_stop_executed", 4.11),
+        ("assistant_text_ready", 4.5),
+        ("first_chunk_ready", 4.7),
+        ("first_audio_started", 4.75),
+        ("tts_generation_finished", 5.2),
     ):
         tracker.mark(name, timestamp)
+    tracker.set_count("queued_chunks", 3)
+    tracker.set_count("played_chunks", 3)
 
     metrics = tracker.metrics()
 
@@ -39,9 +45,18 @@ def test_structured_latency_fields_are_calculated_from_real_event_times():
     assert metrics.total_response_start == pytest.approx(2.35)
     assert metrics.wake_to_playback_cancel == pytest.approx(0.3)
     assert metrics.stt_to_local_stop == pytest.approx(0.01)
+    assert metrics.assistant_text_ready == pytest.approx(2.1)
+    assert metrics.first_chunk_ready == pytest.approx(2.3)
+    assert metrics.first_audio_started == pytest.approx(2.35)
+    assert metrics.tts_first_chunk == pytest.approx(0.2)
+    assert metrics.tts_total_generation == pytest.approx(0.7)
+    assert metrics.queued_chunks == metrics.played_chunks == 3
     assert "total response start: 2.35s" in format_latency(metrics)
     assert "wake-to-playback-cancel: 0.30s" in format_latency(metrics)
     assert "STT-to-local-stop: 0.01s" in format_latency(metrics)
+    assert "TTS-first-chunk: 0.20s" in format_latency(metrics)
+    assert "TTS-total: 0.70s" in format_latency(metrics)
+    assert "played chunks: 3" in format_latency(metrics)
 
 
 def test_latency_history_aggregates_only_available_fields():

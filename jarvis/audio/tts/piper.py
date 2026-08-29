@@ -7,14 +7,17 @@ import importlib.util
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from typing import Any
 
 from .base import (
+    SpeechAudioChunk,
     SpeechSynthesisResult,
     SynthesizedAudio,
     SynthesisErrorCode,
     SynthesisFailure,
+    SynthesisStreamError,
 )
 
 
@@ -78,6 +81,7 @@ class PiperTTS:
         self._synthesis_config_factory = synthesis_config_factory
         self._package_probe = package_probe
         self._engines: dict[str, Any] = {}
+        self._inference_lock = Lock()
 
     def readiness_error(self, voice: str) -> SynthesisFailure | None:
         if voice not in self.available_voices:
@@ -160,29 +164,30 @@ class PiperTTS:
             return self._result(started, voice, error=readiness)
         model_path, config_path = self.settings.voice_files[voice]
         try:
-            engine = self._engines.get(voice)
-            if engine is None:
-                engine = self._engine_loader(model_path, config_path)
-                self._engines[voice] = engine
-            syn_config = self._synthesis_config_factory(length_scale=1.0 / speed)
-            chunks = engine.synthesize(text.strip(), syn_config=syn_config)
-            pcm_parts: list[bytes] = []
-            sample_rate: int | None = None
-            channels: int | None = None
-            first_audio: float | None = None
-            for chunk in chunks:
-                if first_audio is None:
-                    first_audio = perf_counter() - started
-                chunk_rate = int(chunk.sample_rate)
-                chunk_channels = int(chunk.sample_channels)
-                if int(chunk.sample_width) != 2:
-                    raise ValueError("Piper produced non-PCM16 audio")
-                if sample_rate is None:
-                    sample_rate = chunk_rate
-                    channels = chunk_channels
-                elif sample_rate != chunk_rate or channels != chunk_channels:
-                    raise ValueError("Piper changed audio format between chunks")
-                pcm_parts.append(bytes(chunk.audio_int16_bytes))
+            with self._inference_lock:
+                engine = self._engines.get(voice)
+                if engine is None:
+                    engine = self._engine_loader(model_path, config_path)
+                    self._engines[voice] = engine
+                syn_config = self._synthesis_config_factory(length_scale=1.0 / speed)
+                chunks = engine.synthesize(text.strip(), syn_config=syn_config)
+                pcm_parts: list[bytes] = []
+                sample_rate: int | None = None
+                channels: int | None = None
+                first_audio: float | None = None
+                for chunk in chunks:
+                    if first_audio is None:
+                        first_audio = perf_counter() - started
+                    chunk_rate = int(chunk.sample_rate)
+                    chunk_channels = int(chunk.sample_channels)
+                    if int(chunk.sample_width) != 2:
+                        raise ValueError("Piper produced non-PCM16 audio")
+                    if sample_rate is None:
+                        sample_rate = chunk_rate
+                        channels = chunk_channels
+                    elif sample_rate != chunk_rate or channels != chunk_channels:
+                        raise ValueError("Piper changed audio format between chunks")
+                    pcm_parts.append(bytes(chunk.audio_int16_bytes))
             pcm16 = b"".join(pcm_parts)
             if not pcm16 or sample_rate is None or channels is None:
                 return self._result(
@@ -218,3 +223,33 @@ class PiperTTS:
                     f"Piper synthesis failed: {exc}",
                 ),
             )
+
+    def synthesize_stream(
+        self,
+        text: str,
+        *,
+        voice: str,
+        speed: float = 1.0,
+        language: str = "en",
+        cancellation=None,
+    ):
+        """Sentence-level fallback; Piper remains provider-neutral and local."""
+
+        if cancellation is not None and cancellation.is_set():
+            return
+        result = self.synthesize(
+            text,
+            voice=voice,
+            speed=speed,
+            language=language,
+        )
+        if not result.success or result.audio is None:
+            raise SynthesisStreamError(
+                result.error
+                or SynthesisFailure(
+                    SynthesisErrorCode.SYNTHESIS_FAILED,
+                    "Piper sentence synthesis failed.",
+                )
+            )
+        if cancellation is None or not cancellation.is_set():
+            yield SpeechAudioChunk(result.audio, 0, True)

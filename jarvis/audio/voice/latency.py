@@ -20,6 +20,13 @@ class VoiceLatencyMetrics:
     total_response_start: float | None = None
     wake_to_playback_cancel: float | None = None
     stt_to_local_stop: float | None = None
+    assistant_text_ready: float | None = None
+    first_chunk_ready: float | None = None
+    first_audio_started: float | None = None
+    tts_first_chunk: float | None = None
+    tts_total_generation: float | None = None
+    queued_chunks: int | None = None
+    played_chunks: int | None = None
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -35,6 +42,7 @@ class VoiceLatencyTracker:
     def __init__(self, *, clock: Clock = perf_counter) -> None:
         self._clock = clock
         self._events: dict[str, float] = {}
+        self._counts: dict[str, int] = {}
 
     def mark(self, name: str, value: float | None = None) -> float:
         timestamp = self._clock() if value is None else float(value)
@@ -42,6 +50,14 @@ class VoiceLatencyTracker:
             raise ValueError("Latency timestamps cannot be negative")
         self._events[name] = timestamp
         return timestamp
+
+    def set_count(self, name: str, value: int) -> None:
+        if value < 0:
+            raise ValueError("Latency counts cannot be negative")
+        self._counts[name] = int(value)
+
+    def timestamp(self, name: str) -> float | None:
+        return self._events.get(name)
 
     def _elapsed(self, start: str, end: str) -> float | None:
         if start not in self._events or end not in self._events:
@@ -63,6 +79,15 @@ class VoiceLatencyTracker:
             total_response_start=self._elapsed("speech_end", "playback_started"),
             wake_to_playback_cancel=self._elapsed("barge_wake", "playback_cancelled"),
             stt_to_local_stop=self._elapsed("stt_end", "local_stop_executed"),
+            assistant_text_ready=self._elapsed("speech_end", "assistant_text_ready"),
+            first_chunk_ready=self._elapsed("speech_end", "first_chunk_ready"),
+            first_audio_started=self._elapsed("speech_end", "first_audio_started"),
+            tts_first_chunk=self._elapsed("assistant_text_ready", "first_chunk_ready"),
+            tts_total_generation=self._elapsed(
+                "assistant_text_ready", "tts_generation_finished"
+            ),
+            queued_chunks=self._counts.get("queued_chunks"),
+            played_chunks=self._counts.get("played_chunks"),
         )
 
 
@@ -91,7 +116,8 @@ class LatencyHistory:
                 for metric in self._items
                 if (value := getattr(metric, item.name)) is not None
             ]
-            values[item.name] = fmean(samples) if samples else None
+            average = fmean(samples) if samples else None
+            values[item.name] = average
         return VoiceLatencyMetrics(**values)
 
 
@@ -107,7 +133,16 @@ def format_latency(metrics: VoiceLatencyMetrics, *, label: str = "LATENCY") -> s
         ("total response start", metrics.total_response_start),
         ("wake-to-playback-cancel", metrics.wake_to_playback_cancel),
         ("STT-to-local-stop", metrics.stt_to_local_stop),
+        ("assistant-text-ready", metrics.assistant_text_ready),
+        ("first-chunk-ready", metrics.first_chunk_ready),
+        ("first-audio-started", metrics.first_audio_started),
+        ("TTS-first-chunk", metrics.tts_first_chunk),
+        ("TTS-total", metrics.tts_total_generation),
     )
     lines = [f"[{label}]"]
     lines.extend(f"{name}: {value:.2f}s" for name, value in names if value is not None)
+    if metrics.queued_chunks is not None:
+        lines.append(f"queued chunks: {metrics.queued_chunks}")
+    if metrics.played_chunks is not None:
+        lines.append(f"played chunks: {metrics.played_chunks}")
     return "\n".join(lines)

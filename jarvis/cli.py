@@ -389,16 +389,47 @@ def _respond(
         return None
     output_fn(f"Jarvis > {response.text}")
     if tts_runtime is not None and tts_runtime.enabled:
-        speech = tts_runtime.speak(response.text)
+        start_speech = getattr(tts_runtime, "start_speech", None)
+        if callable(start_speech) and callable(
+            getattr(tts_runtime.playback, "start_sequence", None)
+        ):
+            handle = start_speech(response.text)
+            speech = handle.wait()
+        else:
+            speech = tts_runtime.speak(response.text)
+        if speech is None:
+            output_fn("Voice output error: local speech did not complete. Text response remains available.")
+            return None
         if speech.success:
-            synthesis = speech.synthesis
-            duration = synthesis.speech_duration_seconds
-            rtf = synthesis.real_time_factor
-            output_fn(
-                f"[TTS] {synthesis.provider}/{synthesis.voice} "
-                f"synthesis={synthesis.elapsed_seconds:.2f}s "
-                f"speech={duration:.2f}s RTF={rtf:.2f}"
-            )
+            metrics = getattr(speech, "metrics", None)
+            if metrics is not None:
+                first = metrics.tts_first_chunk or 0.0
+                total = metrics.tts_total_generation or 0.0
+                audio_start = (
+                    0.0
+                    if metrics.first_audio_started is None
+                    else max(
+                        0.0,
+                        metrics.first_audio_started - metrics.assistant_text_ready,
+                    )
+                )
+                output_fn(
+                    f"[TTS] {speech.provider}/{speech.voice} "
+                    f"first={first:.2f}s audio_start={audio_start:.2f}s "
+                    f"total={total:.2f}s "
+                    f"speech={metrics.speech_duration_seconds:.2f}s "
+                    f"sentences={metrics.semantic_chunks} "
+                    f"audio_chunks={metrics.played_chunks}"
+                )
+            else:
+                synthesis = speech.synthesis
+                duration = synthesis.speech_duration_seconds
+                rtf = synthesis.real_time_factor
+                output_fn(
+                    f"[TTS] {synthesis.provider}/{synthesis.voice} "
+                    f"synthesis={synthesis.elapsed_seconds:.2f}s "
+                    f"speech={duration:.2f}s RTF={rtf:.2f}"
+                )
         else:
             output_fn(
                 "Voice output error: "

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from collections.abc import Iterator
+from threading import Event
+from typing import Protocol, runtime_checkable
 
 
 class SynthesisErrorCode(StrEnum):
@@ -87,6 +89,27 @@ class SpeechSynthesisResult:
         return self.elapsed_seconds / duration
 
 
+@dataclass(frozen=True, slots=True)
+class SpeechAudioChunk:
+    """One ordered provider output for a Jarvis semantic speech chunk."""
+
+    audio: SynthesizedAudio
+    sequence: int
+    final: bool = False
+
+    def __post_init__(self) -> None:
+        if self.sequence < 0:
+            raise ValueError("audio chunk sequence cannot be negative")
+
+
+class SynthesisStreamError(RuntimeError):
+    """Structured provider failure raised while iterating local audio."""
+
+    def __init__(self, failure: SynthesisFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
 class TTSProvider(Protocol):
     name: str
     available_voices: tuple[str, ...]
@@ -101,3 +124,16 @@ class TTSProvider(Protocol):
         speed: float = 1.0,
         language: str = "en",
     ) -> SpeechSynthesisResult: ...
+
+
+@runtime_checkable
+class StreamingTTSProvider(TTSProvider, Protocol):
+    def synthesize_stream(
+        self,
+        text: str,
+        *,
+        voice: str,
+        speed: float = 1.0,
+        language: str = "en",
+        cancellation: Event | None = None,
+    ) -> Iterator[SpeechAudioChunk]: ...

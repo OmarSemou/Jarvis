@@ -12,10 +12,12 @@ retained listening benchmark. Phase 2C3 adds local wake/VAD inference,
 deterministic voice states, bounded utterances, warmup, latency metrics, and
 cancellable playback. Phase 2C3.1 makes barge-in wake-word-gated by default,
 rejects blank STT turns, adds deterministic safety-routed local STOP, and
-restores general conversational scope. The upstream `agent.py` remains the compatibility
-launcher. Streaming STT/TTS, full echo cancellation, camera capture, memory
-storage, physical hardware, and Tkinter orchestration remain outside the new
-path until later phases.
+restores general conversational scope. Phase 2C3.2 adds provider-neutral
+sentence chunking, bounded PCM lookahead, and early ordered playback after the
+final tool-safe response is committed. The upstream `agent.py` remains the
+compatibility launcher. Streaming STT/LLM text, full echo cancellation, camera
+capture, memory storage, physical hardware, and Tkinter orchestration remain
+outside the new path until later phases.
 
 Importing any `jarvis` module must not start a GUI, open devices, invoke
 subprocesses, perform network requests, or write files. Ollama transport is
@@ -272,17 +274,51 @@ complete:
 LLMResponse.text (original Markdown)
   -> terminal + ConversationService history unchanged
   -> TTSService.prepare_text_for_speech
-  -> Kokoro or Piper receives plain speakable text
+  -> SpeechChunker (ordered semantic sentences, bounded long-sentence fallback)
+  -> SpeechPipeline producer (response generation ID, two-slot PCM queue)
+  -> Kokoro create_stream or one-shot Piper sentence fallback
+  -> AudioPlaybackService consumer (one continuous ordered speaker stream)
 ```
 
 The formatter is deterministic text transformation only. It has no rendering,
 network, URL, filesystem, code-execution, model, or tool authority.
 
+## Phase 2C3.2 early sentence speech
+
+`ConversationService.respond()` still completes the entire provider-neutral
+tool loop before TTS sees any text. A structured tool call, tool result, safety
+denial, and post-tool final response therefore settle before the first sentence
+can be spoken. This phase deliberately does not use Ollama `stream=True` on the
+initial tool-enabled request and does not infer tool intent with keywords or
+regular expressions. The latency gain is entirely after final response commit.
+
+The speech producer is a daemon thread and the playback consumer is the existing
+cancellable background speaker thread. Each response receives a monotonic
+generation ID. The producer may hold at most two queued provider-neutral PCM16
+chunks ahead of the current playback chunk; blocking `Queue` operations provide
+backpressure without unbounded memory. Kokoro 0.6.1's async `create_stream()`
+remains contained inside `KokoroTTS` and yields Jarvis-owned `SpeechAudioChunk`
+values. Piper retains full local synthesis for each Jarvis semantic sentence and
+yields that sentence as one audio chunk.
+
+Playback opens one `RawOutputStream` for the lazy sequence, verifies a stable
+sample rate/channel format, and writes all chunks strictly in order without
+overlap or disk files. `PROCESSING -> SPEAKING` occurs only after that stream
+actually starts. Later sentence inference continues while earlier audio plays.
+On wake-barge cancellation, the current stream is aborted, the bounded queue is
+cleared, and the generation token is latched. An inference call already inside
+a provider may finish, but its result is discarded and no subsequent sentence
+is synthesized. Provider inference is serialized so a late cancelled call and
+the next response never use the same ONNX engine concurrently.
+
 `VoiceLatencyTracker` records monotonic event timestamps and derives
 wake-to-speech start, utterance duration, endpoint delay, STT, LLM/tools, TTS,
 playback-start, speech-end-to-audio-start, wake-to-playback-cancel, and
-STT-to-local-stop values. Normal mode is quiet; `--debug-latency` prints actual
-per-interaction metrics and labeled wake-barge/local-stop/no-speech events.
+STT-to-local-stop values. Phase 2C3.2 additionally records
+assistant-text-ready, first-chunk-ready, first-audio-started, TTS-first-chunk,
+full generation time, and queued/played audio-chunk counts. Normal mode is
+quiet; `--debug-latency` prints actual per-interaction metrics and labeled
+wake-barge/local-stop/no-speech events.
 
 `LLMRequest` carries provider-neutral temperature with a validated default of
 `0.2`; the Ollama adapter maps it to native options. Thinking remains off by
@@ -332,11 +368,13 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.audio.stt.base`: provider-neutral transcription result/error contract.
 - `jarvis.audio.stt.whisper_cpp`: bounded local subprocess adapter.
 - `jarvis.audio.tts.base`: provider-neutral PCM16 and structured result/error contracts.
+- `jarvis.audio.tts.chunks`: deterministic provider-neutral semantic speech splitting.
 - `jarvis.audio.tts.kokoro`: lazy local `kokoro-onnx` CPU adapter.
 - `jarvis.audio.tts.piper`: lazy local OHF Piper CPU adapter.
-- `jarvis.audio.tts.playback`: lazy output discovery and synchronous PCM16 playback.
+- `jarvis.audio.tts.pipeline`: bounded generation-aware synthesis/playback queue.
+- `jarvis.audio.tts.playback`: lazy output discovery and continuous queued PCM16 playback.
 - `jarvis.audio.tts.text`: deterministic Markdown-to-speech text normalization.
-- `jarvis.audio.tts.service`: session selection and synthesize-then-play coordination.
+- `jarvis.audio.tts.service`: provider selection and pipelined speech-session coordination.
 - `jarvis.audio.tts.benchmark`: fixed-corpus local synthesis and guarded sample cleanup.
 - `jarvis.audio.realtime`: bounded continuous local PCM frames with no persistence.
 - `jarvis.audio.wake`: provider-neutral wake contract and lazy OpenWakeWord adapter.
@@ -361,7 +399,10 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.robot.controller`: safety-gated semantic simulator controller.
 - `jarvis.robot.simulator`: deterministic in-memory robot state and event log.
 
-Future modules may add streaming/early STT/TTS, real AEC, memory, face, vision,
-external integrations, physical robot components, and ESP32 transport. None of those
-features is part of Phase 2C3.1. Microphone/STT/TTS testing and the robot
-simulator are not hardware safety validation.
+Future modules may add streaming/early STT, safe LLM text streaming, real AEC,
+memory, a separate Jarvis face, vision, external integrations, physical robot
+components, and ESP32 transport. None of those features is part of Phase
+2C3.2. The original BMO face/image assets remain untouched as historical and
+design reference; they must not be removed, overwritten, renamed, replaced, or
+made the primary Jarvis face without explicit user approval. Microphone/STT/TTS
+testing and the robot simulator are not hardware safety validation.

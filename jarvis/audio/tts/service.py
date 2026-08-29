@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import count
+from threading import Lock
+from time import perf_counter
 
 from .base import (
     SpeechSynthesisResult,
@@ -12,6 +15,12 @@ from .base import (
     TTSProvider,
 )
 from .playback import AudioPlaybackService, PlaybackHandle, PlaybackResult
+from .chunks import SpeechChunker
+from .pipeline import (
+    SpeechPipeline,
+    SpeechPipelineSettings,
+    SpeechSessionHandle,
+)
 from .text import prepare_text_for_speech
 
 
@@ -60,6 +69,8 @@ class TTSService:
         voice: str = "am_fenrir",
         speed: float = 1.0,
         language: str = "en",
+        chunker: SpeechChunker | None = None,
+        pipeline_settings: SpeechPipelineSettings = SpeechPipelineSettings(),
     ) -> None:
         if set(providers) != set(DEFAULT_PROVIDER_VOICES):
             raise ValueError("TTS providers must be exactly: kokoro, piper")
@@ -70,6 +81,11 @@ class TTSService:
         self.voice = voice
         self.speed = speed
         self.language = language
+        self.chunker = chunker or SpeechChunker()
+        self.pipeline = SpeechPipeline(playback, settings=pipeline_settings)
+        self._generation_ids = count(1)
+        self._session_lock = Lock()
+        self._active_session: SpeechSessionHandle | None = None
         self._warmup_attempted = False
         self._warmup_failure: SynthesisFailure | None = None
         self._validate_selection(provider, voice)
@@ -135,6 +151,42 @@ class TTSService:
     def start_playback(self, audio: SynthesizedAudio) -> PlaybackHandle:
         return self.playback.start(audio)
 
+    def start_speech(
+        self,
+        text: str,
+        *,
+        assistant_text_ready: float | None = None,
+    ) -> SpeechSessionHandle:
+        """Begin bounded semantic synthesis and playback for one response."""
+
+        ready_at = perf_counter() if assistant_text_ready is None else assistant_text_ready
+        speech_text = prepare_text_for_speech(text)
+        chunks = self.chunker.chunk(speech_text)
+        failure = None
+        if not self.enabled:
+            failure = SynthesisFailure(
+                SynthesisErrorCode.DISABLED,
+                "Voice output is disabled.",
+            )
+
+        with self._session_lock:
+            previous = self._active_session
+            if previous is not None and not previous.done:
+                previous.stop()
+                previous.wait(1.0)
+            handle = self.pipeline.start(
+                self.providers[self.provider],
+                chunks,
+                generation_id=next(self._generation_ids),
+                voice=self.voice,
+                speed=self.speed,
+                language=self.language,
+                assistant_text_ready=ready_at,
+                initial_failure=failure,
+            )
+            self._active_session = handle
+            return handle
+
     def speak(self, text: str) -> SpeechOutputResult:
         synthesis = self.synthesize(text)
         if not synthesis.success or synthesis.audio is None:
@@ -156,6 +208,10 @@ class TTSService:
         return SpeechOutputResult(False, result)
 
     def stop(self) -> None:
+        with self._session_lock:
+            active = self._active_session
+        if active is not None:
+            active.stop()
         self.playback.stop()
 
     cancel = stop

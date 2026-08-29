@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import chain
 from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Any
@@ -234,14 +235,36 @@ class AudioPlaybackService:
         *,
         _handle: PlaybackHandle | None = None,
     ) -> PlaybackResult:
+        return self.play_sequence((audio,), _handle=_handle)
+
+    def play_sequence(
+        self,
+        audio_chunks: Iterable[SynthesizedAudio],
+        *,
+        _handle: PlaybackHandle | None = None,
+        on_chunk_played: Callable[[SynthesizedAudio], None] | None = None,
+    ) -> PlaybackResult:
+        """Play a lazy ordered PCM sequence through one continuous stream."""
+
         self._stop_requested.clear()
         try:
             if _handle is not None and _handle._cancelled.is_set():
                 return self._interrupted_result()
+            chunks = iter(audio_chunks)
+            try:
+                first = next(chunks)
+            except StopIteration:
+                return PlaybackResult(
+                    False,
+                    error=PlaybackFailure(
+                        PlaybackErrorCode.PLAYBACK_FAILED,
+                        "No synthesized audio was available for playback.",
+                    ),
+                )
             device = self.selected_output()
-            if device.max_output_channels < audio.channels:
+            if device.max_output_channels < first.channels:
                 raise SpeakerUnavailableError(
-                    f"Speaker '{device.name}' does not support {audio.channels} channels."
+                    f"Speaker '{device.name}' does not support {first.channels} channels."
                 )
             if self._stop_requested.is_set() or (
                 _handle is not None and _handle._cancelled.is_set()
@@ -249,8 +272,8 @@ class AudioPlaybackService:
                 return self._interrupted_result(device.name)
             module = self.backend()
             stream = module.RawOutputStream(
-                samplerate=audio.sample_rate,
-                channels=audio.channels,
+                samplerate=first.sample_rate,
+                channels=first.channels,
                 dtype="int16",
                 device=device.index,
             )
@@ -263,17 +286,27 @@ class AudioPlaybackService:
             stream.start()
             if _handle is not None:
                 _handle._mark_started()
-            frame_bytes = 2 * audio.channels
-            chunk_bytes = max(
-                frame_bytes,
-                round(audio.sample_rate * 0.02) * frame_bytes,
-            )
-            for offset in range(0, len(audio.pcm16), chunk_bytes):
-                if self._stop_requested.is_set() or (
-                    _handle is not None and _handle._cancelled.is_set()
+            for audio in chain((first,), chunks):
+                if (
+                    audio.sample_rate != first.sample_rate
+                    or audio.channels != first.channels
                 ):
-                    return self._interrupted_result(device.name)
-                stream.write(audio.pcm16[offset : offset + chunk_bytes])
+                    raise ValueError(
+                        "Synthesized audio format changed during queued playback."
+                    )
+                frame_bytes = 2 * audio.channels
+                chunk_bytes = max(
+                    frame_bytes,
+                    round(audio.sample_rate * 0.02) * frame_bytes,
+                )
+                for offset in range(0, len(audio.pcm16), chunk_bytes):
+                    if self._stop_requested.is_set() or (
+                        _handle is not None and _handle._cancelled.is_set()
+                    ):
+                        return self._interrupted_result(device.name)
+                    stream.write(audio.pcm16[offset : offset + chunk_bytes])
+                if on_chunk_played is not None:
+                    on_chunk_played(audio)
             stream.stop()
             if self._stop_requested.is_set():
                 return self._interrupted_result(device.name)
@@ -322,6 +355,16 @@ class AudioPlaybackService:
     def start(self, audio: SynthesizedAudio) -> PlaybackHandle:
         """Play in a background thread so the coordinator can monitor the mic."""
 
+        return self.start_sequence((audio,))
+
+    def start_sequence(
+        self,
+        audio_chunks: Iterable[SynthesizedAudio],
+        *,
+        on_chunk_played: Callable[[SynthesizedAudio], None] | None = None,
+    ) -> PlaybackHandle:
+        """Consume a lazy sequence in one cancellable background stream."""
+
         with self._stream_lock:
             if self._active_handle is not None and not self._active_handle.done:
                 raise SpeakerError("Another speech playback operation is already active.")
@@ -330,11 +373,16 @@ class AudioPlaybackService:
 
         def worker() -> None:
             try:
-                handle._finish(self.play(audio, _handle=handle))
+                result = self.play_sequence(
+                    audio_chunks,
+                    _handle=handle,
+                    on_chunk_played=on_chunk_played,
+                )
             finally:
                 with self._stream_lock:
                     if self._active_handle is handle:
                         self._active_handle = None
+            handle._finish(result)
 
         Thread(target=worker, name="jarvis-tts-playback", daemon=True).start()
         return handle

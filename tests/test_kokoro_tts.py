@@ -1,4 +1,13 @@
-from jarvis.audio.tts.base import SynthesisErrorCode, SynthesizedAudio
+from threading import Event
+
+import pytest
+
+from jarvis.audio.tts.base import (
+    SpeechAudioChunk,
+    SynthesisErrorCode,
+    SynthesisStreamError,
+    SynthesizedAudio,
+)
 from jarvis.audio.tts.kokoro import KOKORO_VOICES, KokoroSettings, KokoroTTS
 
 
@@ -71,3 +80,55 @@ def test_kokoro_rejects_non_english_language(tmp_path):
     provider, _, _, _ = _provider(tmp_path)
     result = provider.synthesize("Hej.", voice="am_michael", language="da")
     assert result.error.code is SynthesisErrorCode.UNSUPPORTED_LANGUAGE
+
+
+def test_kokoro_async_stream_is_adapted_to_ordered_provider_neutral_pcm(tmp_path):
+    class StreamingEngine(Engine):
+        async def create_stream(self, text, **kwargs):
+            self.calls.append((text, kwargs))
+            yield [0.0, 0.25], 24_000
+            yield [-0.25, 0.5], 24_000
+
+    provider, engine, _, _ = _provider(tmp_path, engine=StreamingEngine())
+
+    chunks = list(provider.synthesize_stream("Streaming.", voice="am_fenrir"))
+
+    assert all(isinstance(chunk, SpeechAudioChunk) for chunk in chunks)
+    assert [chunk.sequence for chunk in chunks] == [0, 1]
+    assert all(chunk.audio.sample_rate == 24_000 for chunk in chunks)
+    assert engine.calls[0][0] == "Streaming."
+
+
+def test_kokoro_stream_cancellation_discards_remaining_audio(tmp_path):
+    cancellation = Event()
+
+    class StreamingEngine(Engine):
+        async def create_stream(self, _text, **_kwargs):
+            yield [0.1], 24_000
+            yield [0.2], 24_000
+
+    provider, _, _, _ = _provider(tmp_path, engine=StreamingEngine())
+    stream = provider.synthesize_stream(
+        "Cancel me.", voice="am_fenrir", cancellation=cancellation
+    )
+
+    first = next(stream)
+    cancellation.set()
+
+    assert first.sequence == 0
+    assert list(stream) == []
+
+
+def test_kokoro_stream_error_is_structured(tmp_path):
+    class BrokenStreamingEngine(Engine):
+        async def create_stream(self, _text, **_kwargs):
+            raise RuntimeError("stream broke")
+            yield
+
+    provider, _, _, _ = _provider(tmp_path, engine=BrokenStreamingEngine())
+
+    with pytest.raises(SynthesisStreamError) as raised:
+        list(provider.synthesize_stream("Broken.", voice="am_fenrir"))
+
+    assert raised.value.failure.code is SynthesisErrorCode.SYNTHESIS_FAILED
+    assert "stream broke" in raised.value.failure.message

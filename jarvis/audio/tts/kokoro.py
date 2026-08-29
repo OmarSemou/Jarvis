@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.util
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from typing import Any
 
 from .base import (
+    SpeechAudioChunk,
     SpeechSynthesisResult,
     SynthesizedAudio,
     SynthesisErrorCode,
     SynthesisFailure,
+    SynthesisStreamError,
 )
 
 
@@ -80,6 +84,7 @@ class KokoroTTS:
         self._engine_loader = engine_loader
         self._package_probe = package_probe
         self._engine: Any | None = None
+        self._inference_lock = Lock()
 
     def readiness_error(self, voice: str) -> SynthesisFailure | None:
         if voice not in self.available_voices:
@@ -161,18 +166,19 @@ class KokoroTTS:
         if readiness is not None:
             return self._result(started, voice, error=readiness)
         try:
-            if self._engine is None:
-                self._engine = self._engine_loader(
-                    self.settings.model_path,
-                    self.settings.voices_path,
+            with self._inference_lock:
+                if self._engine is None:
+                    self._engine = self._engine_loader(
+                        self.settings.model_path,
+                        self.settings.voices_path,
+                    )
+                language_code = "en-gb" if voice.startswith("b") else "en-us"
+                samples, sample_rate = self._engine.create(
+                    text.strip(),
+                    voice=voice,
+                    speed=speed,
+                    lang=language_code,
                 )
-            language_code = "en-gb" if voice.startswith("b") else "en-us"
-            samples, sample_rate = self._engine.create(
-                text.strip(),
-                voice=voice,
-                speed=speed,
-                lang=language_code,
-            )
             pcm16 = _pcm16_bytes(samples)
             if not pcm16:
                 return self._result(
@@ -210,3 +216,123 @@ class KokoroTTS:
                     f"Kokoro synthesis failed: {exc}",
                 ),
             )
+
+    def synthesize_stream(
+        self,
+        text: str,
+        *,
+        voice: str,
+        speed: float = 1.0,
+        language: str = "en",
+        cancellation=None,
+    ):
+        """Yield Jarvis-owned PCM chunks from Kokoro 0.6.1's async stream."""
+
+        # Keep validation behavior identical to full synthesis without running
+        # inference merely to validate a request.
+        if not text.strip():
+            raise SynthesisStreamError(
+                SynthesisFailure(SynthesisErrorCode.INVALID_TEXT, "Speech text is empty.")
+            )
+        if not 0.5 <= speed <= 2.0:
+            raise SynthesisStreamError(
+                SynthesisFailure(
+                    SynthesisErrorCode.INVALID_SPEED,
+                    "Speech speed must be from 0.5 to 2.0.",
+                )
+            )
+        if language != "en":
+            raise SynthesisStreamError(
+                SynthesisFailure(
+                    SynthesisErrorCode.UNSUPPORTED_LANGUAGE,
+                    "Kokoro's Phase 2C2 adapter supports English only.",
+                )
+            )
+        readiness = self.readiness_error(voice)
+        if readiness is not None:
+            raise SynthesisStreamError(readiness)
+
+        try:
+            with self._inference_lock:
+                if self._engine is None:
+                    self._engine = self._engine_loader(
+                        self.settings.model_path,
+                        self.settings.voices_path,
+                    )
+            stream_factory = getattr(self._engine, "create_stream", None)
+            if not callable(stream_factory):
+                result = self.synthesize(
+                    text,
+                    voice=voice,
+                    speed=speed,
+                    language=language,
+                )
+                if not result.success or result.audio is None:
+                    raise SynthesisStreamError(
+                        result.error
+                        or SynthesisFailure(
+                            SynthesisErrorCode.SYNTHESIS_FAILED,
+                            "Kokoro streaming fallback failed.",
+                        )
+                    )
+                if cancellation is None or not cancellation.is_set():
+                    yield SpeechAudioChunk(result.audio, 0, True)
+                return
+
+            with self._inference_lock:
+                language_code = "en-gb" if voice.startswith("b") else "en-us"
+                loop = asyncio.new_event_loop()
+                stream = stream_factory(
+                    text.strip(),
+                    voice=voice,
+                    speed=speed,
+                    lang=language_code,
+                )
+                sequence = 0
+                produced = False
+                try:
+                    while cancellation is None or not cancellation.is_set():
+                        try:
+                            samples, sample_rate = loop.run_until_complete(
+                                stream.__anext__()
+                            )
+                        except StopAsyncIteration:
+                            break
+                        if cancellation is not None and cancellation.is_set():
+                            break
+                        pcm16 = _pcm16_bytes(samples)
+                        if not pcm16:
+                            continue
+                        produced = True
+                        yield SpeechAudioChunk(
+                            SynthesizedAudio(pcm16, int(sample_rate), 1),
+                            sequence,
+                        )
+                        sequence += 1
+                finally:
+                    loop.run_until_complete(stream.aclose())
+                    loop.close()
+            if not produced and (cancellation is None or not cancellation.is_set()):
+                raise SynthesisStreamError(
+                    SynthesisFailure(
+                        SynthesisErrorCode.EMPTY_AUDIO,
+                        "Kokoro produced no audio.",
+                    )
+                )
+        except SynthesisStreamError:
+            raise
+        except (ImportError, OSError) as exc:
+            self._engine = None
+            raise SynthesisStreamError(
+                SynthesisFailure(
+                    SynthesisErrorCode.MODEL_LOAD_FAILED,
+                    f"Kokoro could not load its local model: {exc}",
+                )
+            ) from exc
+        except Exception as exc:
+            raise SynthesisStreamError(
+                SynthesisFailure(
+                    SynthesisErrorCode.SYNTHESIS_FAILED,
+                    f"Kokoro streaming synthesis failed: {exc}",
+                )
+            ) from exc

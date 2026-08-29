@@ -1,4 +1,4 @@
-"""Read-only, platform-aware Jarvis Phase 2C3.1 diagnostics."""
+"""Read-only, platform-aware Jarvis Phase 2C3.2 diagnostics."""
 
 from __future__ import annotations
 
@@ -415,7 +415,7 @@ def run_preflight(
 
 
 def format_report(report: PreflightReport) -> str:
-    lines = ["Jarvis Phase 2C3.1 preflight (read-only)", ""]
+    lines = ["Jarvis Phase 2C3.2 preflight (read-only)", ""]
     for check in report.checks:
         path = f" [{check.path}]" if check.path is not None else ""
         lines.append(f"{check.status.value:11} {check.level.value:15} {check.name}: {check.detail}{path}")

@@ -3,7 +3,7 @@
 Jarvis is becoming a fully local, API-free personal companion robot. The
 repository now includes the **Phase 1 architecture and safety foundation**,
 **Phase 2A local text conversation**, **Phase 2B structured robot tools with a
-deterministic simulator**, and **Phase 2C3.1 corrected local voice interaction**
+deterministic simulator**, and **Phase 2C3.2 responsive local voice interaction**
 for Windows 11. Continuous listening is an explicitly enabled local wake-word
 mode; Jarvis does not control a physical robot.
 
@@ -61,11 +61,16 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
   bypasses Qwen while retaining the controller and safety boundary.
 - TTS-only Markdown normalization: terminal output and conversation history
   retain formatting while Kokoro/Piper receive plain speakable text.
+- Deterministic sentence-level speech chunks, Kokoro 0.6.1 audio streaming, and
+  a two-chunk bounded producer/consumer queue that begins playback with the
+  first usable PCM rather than waiting for complete response synthesis.
+- Monotonic speech-generation identities and wake-barge cancellation that abort
+  current playback, clear queued PCM, and discard late provider output.
 - Lossless bounded pre-roll for both normal wake activation and wake-gated
   playback interruption, with score and frame-continuity diagnostics.
 - A conservative, configurable Ollama conversation temperature of `0.2`.
 
-The existing `agent.py` remains a compatibility launcher. Phase 2C3.1 does not
+The existing `agent.py` remains a compatibility launcher. Phase 2C3.2 does not
 reuse its legacy last-stdout-line Whisper parsing or GUI audio thread. Wake
 word, camera, memory, and GUI implementations there have not been
 modularized. The new chat/hearing path does not use the legacy `BotGUI` class.
@@ -329,7 +334,11 @@ After STT, an anchored local grammar recognizes only explicit STOP utterances;
 it sends the existing semantic STOP intent through `SafeRobotController` and
 `SafetySupervisor` without asking Qwen. Every other valid transcript uses the
 normal `ConversationService` and structured-tool path. No SafetySupervisor
-behavior changed in Phase 2C3.1.
+behavior changed in Phase 2C3.2. Sentence synthesis starts only after
+`ConversationService.respond()` has completed its bounded native tool loop and
+returned the final user-visible response, so speech cannot race or contradict a
+later safety decision. Ollama token streaming is deliberately not used for the
+initial tool-enabled request in this phase.
 
 Voice stop is not the physical emergency stop. A future robot still requires
 an ESP32 watchdog, local motor-command timeout, and a physical e-stop/power
@@ -353,9 +362,9 @@ explicit acceleration decision.
 
 ## Not implemented yet
 
-Full acoustic echo cancellation, streaming STT/TTS, face GUI, camera/vision,
-web search, persistent memory, ESP32 communication, motors, servos, and
-physical movement are not part of Phase 2C3.1. Raspberry Pi
+Full acoustic echo cancellation, streaming STT, LLM token streaming, a Jarvis
+face GUI, camera/vision, web search, persistent memory, ESP32 communication,
+motors, servos, and physical movement are not part of Phase 2C3.2. Raspberry Pi
 deployment comes after desktop and simulator validation.
 
 ## Legacy files
@@ -364,6 +373,10 @@ deployment comes after desktop and simulator validation.
 for upstream history and later Linux migration. They are Raspberry-Pi/Linux
 specific and are not the Windows Phase 1 setup path.
 
-Existing faces, sounds, and `wakeword.onnx` are also retained unchanged. Their
-licensing/provenance is not fully resolved by the repository MIT license; see
-[NOTICE.md](NOTICE.md) before redistributing them.
+Existing faces, sounds, and `wakeword.onnx` are also retained unchanged. In
+particular, the original BMO face/image assets are intentional historical and
+design references: do not delete, overwrite, rename, replace, optimize away, or
+repurpose them as Jarvis's primary face without explicit user approval. A future
+Jarvis face will be a separate implementation. Asset licensing/provenance is not
+fully resolved by the repository MIT license; see [NOTICE.md](NOTICE.md) before
+redistributing them.
