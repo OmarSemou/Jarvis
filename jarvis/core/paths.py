@@ -113,6 +113,13 @@ class JarvisPaths:
         return model, model.with_suffix(".onnx.json")
 
     @property
+    def legacy_bmo_voice_files(self) -> tuple[Path, Path]:
+        """The original upstream custom Piper BMO model/config locations."""
+
+        model = self.repository_root / "voices" / "bmo-custom.onnx"
+        return model, model.with_suffix(".onnx.json")
+
+    @property
     def tts_benchmark_dir(self) -> Path:
         return self.data_dir / "benchmarks" / "tts"
 

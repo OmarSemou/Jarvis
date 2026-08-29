@@ -57,10 +57,15 @@ class PiperSettings:
     voice_files: Mapping[str, tuple[Path, Path]]
 
     def __post_init__(self) -> None:
-        if set(self.voice_files) != set(PIPER_VOICES):
-            raise ValueError("Piper settings must define only the curated Phase 2C2 voices")
+        if not self.voice_files:
+            raise ValueError("Piper settings must define at least one voice")
         for model_path, config_path in self.voice_files.values():
-            if not model_path.is_absolute() or not config_path.is_absolute():
+            if (
+                not isinstance(model_path, Path)
+                or not isinstance(config_path, Path)
+                or not model_path.is_absolute()
+                or not config_path.is_absolute()
+            ):
                 raise ValueError("Piper model and config paths must be absolute")
 
 
@@ -77,6 +82,7 @@ class PiperTTS:
         package_probe: PackageProbe = _package_available,
     ) -> None:
         self.settings = settings
+        self.available_voices = tuple(settings.voice_files)
         self._engine_loader = engine_loader
         self._synthesis_config_factory = synthesis_config_factory
         self._package_probe = package_probe

@@ -29,9 +29,15 @@ preserved while their terms are reviewed.
   own terms. The configured `en_GB-semaine-medium` voice is not tracked here;
   its model card identifies the source dataset as CC BY-NC-SA 4.0.
   Source: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_GB/semaine/medium/MODEL_CARD
-- The legacy setup script references a custom BMO-style voice. Its complete
-  model, dataset, character, and redistribution provenance is not established
-  by the repository's MIT license.
+- The legacy `setup.sh` from the upstream Be More Agent history downloaded a
+  custom Piper ONNX model as `voices/bmo-custom.onnx` plus
+  `voices/bmo-custom.onnx.json` from an upstream release. The retained legacy
+  `agent.py` launched Piper and played its raw 22050-Hz PCM output. Jarvis now
+  maps those same original files to the modern provider-neutral Piper adapter;
+  it does not download, clone, or generate a replacement. The complete model,
+  source voice-dataset, character, and redistribution provenance is unresolved
+  and is not granted by this repository's MIT license. Keep the files private
+  until their terms are verified. Historical source: https://github.com/brenpoly/be-more-agent
 - Existing face PNGs and sound WAVs came from the upstream history, but no
   per-asset authorship/license manifest is present.
 

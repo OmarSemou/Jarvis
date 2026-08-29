@@ -258,6 +258,23 @@ def run_preflight(
                     path,
                 )
             )
+    bmo_model, bmo_config = paths.legacy_bmo_voice_files
+    for suffix, path in (("model", bmo_model), ("config", bmo_config)):
+        found = exists(path)
+        selected = config.tts_profile == "bmo"
+        checks.append(
+            PreflightCheck(
+                f"Piper BMO {suffix}",
+                RequirementLevel.CURRENT,
+                CheckStatus.AVAILABLE if found else CheckStatus.MISSING,
+                (
+                    f"original legacy asset found ({'selected' if selected else 'optional'})"
+                    if found
+                    else f"original legacy asset missing ({'selected' if selected else 'optional'})"
+                ),
+                path,
+            )
+        )
     openwakeword_available = module_available("openwakeword")
     checks.append(
         PreflightCheck(
@@ -367,15 +384,20 @@ def run_preflight(
         )
     checks.append(speaker_check)
     check_status = {check.name: check.status for check in checks}
-    selected_tts_checks = (
-        ("kokoro-onnx", "Kokoro model", "Kokoro voice bundle")
-        if config.tts_provider == "kokoro"
-        else (
+    if config.tts_profile == "bmo":
+        selected_tts_checks = (
+            "Piper package",
+            "Piper BMO model",
+            "Piper BMO config",
+        )
+    elif config.tts_profile == "fenrir" or config.tts_provider == "kokoro":
+        selected_tts_checks = ("kokoro-onnx", "Kokoro model", "Kokoro voice bundle")
+    else:
+        selected_tts_checks = (
             "Piper package",
             f"Piper {config.tts_voice} model",
             f"Piper {config.tts_voice} config",
         )
-    )
     required_voice_checks = (
         "Ollama",
         "Whisper.cpp",

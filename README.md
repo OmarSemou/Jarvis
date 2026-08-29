@@ -62,6 +62,9 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
   bypasses Qwen while retaining the controller and safety boundary.
 - TTS-only Markdown normalization: terminal output and conversation history
   retain formatting while Kokoro/Piper receive plain speakable text.
+- Semantic voice profiles keep Fenrir (`kokoro/am_fenrir`) as the default and
+  optionally restore the original upstream BMO Piper model when its historical
+  `voices/bmo-custom.onnx` assets are supplied.
 - Deterministic sentence-level speech chunks, Kokoro 0.6.1 audio streaming, and
   a two-chunk bounded producer/consumer queue that begins playback with the
   first usable PCM rather than waiting for complete response synthesis.
@@ -231,20 +234,25 @@ Whisper, microphone access, speaker playback, or network access:
 .\.venv\Scripts\python.exe -m jarvis tts-benchmark
 ```
 
-The 48 WAV files remain under ignored `data/benchmarks/tts/<timestamp>/` so a
-human can compare voice quality. Remove exactly one run later with:
+The 48 curated WAV files remain under ignored `data/benchmarks/tts/<timestamp>/`
+so a human can compare voice quality; an installed legacy BMO model adds eight
+more labeled samples. Remove exactly one run later with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m jarvis tts-benchmark-clean "<run-directory>"
 ```
 
-Speech remains disabled in tracked example configuration. In private voice-mode
-configuration the selected default is Kokoro `am_fenrir`. In chat,
-use `/voice on` to enable the configured provider/voice for the session. Both
-typed and `/talk` responses are spoken only after the complete text response is
-visible. Continuous mode uses cancellable background playback and requires the
-local **Hey Jarvis** wake detector—not generic VAD alone—to authorize barge-in
-by default. Synthesized audio remains in memory and is not retained.
+Speech remains disabled in tracked example configuration. The semantic voice
+profiles are Fenrir (the default Kokoro `am_fenrir`) and the original legacy
+BMO Piper model. In chat, use `/voice on` to enable output, `/voice fenrir` or
+`/voice bmo` to switch profiles, and `/voice status` to inspect the mapping.
+The continuous command also accepts `--voice fenrir` or `--voice bmo`. BMO is
+available only when the original `voices/bmo-custom.onnx` and JSON config have
+been supplied; the app never downloads an imitation. Both typed and `/talk`
+responses are spoken only after the complete text response is visible.
+Continuous mode uses cancellable background playback and requires the local
+**Hey Jarvis** wake detector—not generic VAD alone—to authorize barge-in by
+default. Synthesized audio remains in memory and is not retained.
 See [docs/audio.md](docs/audio.md) for provider and latency details.
 
 ## Configuration
@@ -271,8 +279,10 @@ Supported fields are:
 - `retain_recordings` (default `false`)
 - `output_device` (default `null`, meaning the system default output)
 - `tts_enabled` (tracked default `false`; continuous mode requires it enabled)
-- `tts_provider` (`kokoro` or `piper`)
-- `tts_voice` (Kokoro `am_fenrir` is the selected English default)
+- `tts_profile` (`fenrir` or `bmo`; omitted preserves legacy provider/voice settings)
+- `tts_provider` (`kokoro` or `piper`, retained compatibility setting)
+- `tts_voice` (Fenrir maps to Kokoro `am_fenrir`; BMO maps to the original
+  custom Piper model)
 - `tts_speed` (`0.5` through `2.0`), `tts_language` (`en` in Phase 2C3)
 - `voice_mode_enabled`, `wakeword_enabled`, `wakeword_threshold`
 - `vad_enabled`, `vad_speech_threshold`, `vad_trailing_silence_ms`

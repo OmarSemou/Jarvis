@@ -69,6 +69,7 @@ KNOWN_KEYS = frozenset(
         "tts_enabled",
         "tts_provider",
         "tts_voice",
+        "tts_profile",
         "tts_speed",
         "tts_language",
         "voice_mode_enabled",
@@ -133,6 +134,7 @@ class JarvisConfig:
     tts_enabled: bool = False
     tts_provider: str = "kokoro"
     tts_voice: str = "am_fenrir"
+    tts_profile: str | None = None
     tts_speed: float = 1.0
     tts_language: str = "en"
     voice_mode_enabled: bool = False
@@ -194,6 +196,7 @@ class JarvisConfig:
             "tts_enabled": self.tts_enabled,
             "tts_provider": self.tts_provider,
             "tts_voice": self.tts_voice,
+            "tts_profile": self.tts_profile,
             "tts_speed": self.tts_speed,
             "tts_language": self.tts_language,
             "voice_mode_enabled": self.voice_mode_enabled,
@@ -385,12 +388,27 @@ def parse_config(
     if not isinstance(tts_enabled, bool):
         problems.append("'tts_enabled' must be a boolean")
 
+    raw_profile = merged["tts_profile"]
+    if raw_profile is None:
+        tts_profile = None
+    elif isinstance(raw_profile, str) and raw_profile.strip():
+        tts_profile = raw_profile.strip().casefold()
+        if tts_profile not in {"fenrir", "bmo"}:
+            problems.append("'tts_profile' must be one of: fenrir, bmo")
+    else:
+        tts_profile = None
+        problems.append("'tts_profile' must be one of: fenrir, bmo, or null")
+
     tts_provider = _validate_string(merged, "tts_provider", problems).casefold()
     if tts_provider not in SUPPORTED_TTS_VOICES:
         problems.append("'tts_provider' must be one of: kokoro, piper")
 
     tts_voice = _validate_string(merged, "tts_voice", problems)
-    if tts_provider in SUPPORTED_TTS_VOICES and tts_voice not in SUPPORTED_TTS_VOICES[tts_provider]:
+    if (
+        tts_profile is None
+        and tts_provider in SUPPORTED_TTS_VOICES
+        and tts_voice not in SUPPORTED_TTS_VOICES[tts_provider]
+    ):
         choices = ", ".join(sorted(SUPPORTED_TTS_VOICES[tts_provider]))
         problems.append(f"'tts_voice' must be one of the configured {tts_provider} voices: {choices}")
 
@@ -504,6 +522,7 @@ def parse_config(
         tts_enabled=tts_enabled,
         tts_provider=tts_provider,
         tts_voice=tts_voice,
+        tts_profile=tts_profile,
         tts_speed=float(tts_speed),
         tts_language=tts_language,
         voice_mode_enabled=voice_mode_enabled,

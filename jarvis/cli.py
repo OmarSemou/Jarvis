@@ -41,6 +41,7 @@ from jarvis.audio.tts.benchmark import (
 from jarvis.audio.tts.base import TTSProvider
 from jarvis.audio.tts.kokoro import KokoroSettings, KokoroTTS
 from jarvis.audio.tts.piper import PiperSettings, PiperTTS
+from jarvis.audio.tts.profiles import resolve_voice_profile
 from jarvis.audio.tts.playback import (
     AudioPlaybackService,
     SpeakerError,
@@ -117,6 +118,9 @@ def create_tts_providers(config: JarvisConfig, paths: JarvisPaths) -> dict[str, 
         voice: paths.piper_voice_files(voice)
         for voice in ("en_US-joe-medium", "en_US-john-medium")
     }
+    bmo_files = paths.legacy_bmo_voice_files
+    if all(path.is_file() for path in bmo_files):
+        piper_files["bmo"] = bmo_files
     return {
         "kokoro": KokoroTTS(
             KokoroSettings(paths.kokoro_model.resolve(), paths.kokoro_voices.resolve())
@@ -128,16 +132,27 @@ def create_tts_providers(config: JarvisConfig, paths: JarvisPaths) -> dict[str, 
 def create_tts_runtime(
     config: JarvisConfig,
     paths: JarvisPaths | None = None,
+    *,
+    profile: str | None = None,
 ) -> TTSService:
     paths = paths or JarvisPaths.discover()
+    selected_profile = profile if profile is not None else getattr(config, "tts_profile", None)
+    if selected_profile is not None:
+        selected = resolve_voice_profile(selected_profile)
+        provider = selected.provider
+        voice = selected.provider_voice
+    else:
+        provider = config.tts_provider
+        voice = config.tts_voice
     return TTSService(
         create_tts_providers(config, paths),
         AudioPlaybackService(config.output_device),
         enabled=config.tts_enabled,
-        provider=config.tts_provider,
-        voice=config.tts_voice,
+        provider=provider,
+        voice=voice,
         speed=config.tts_speed,
         language=config.tts_language,
+        profile=selected_profile,
     )
 
 
@@ -302,6 +317,21 @@ def _format_robot_status(controller: SafeRobotController) -> str:
         f"Last gesture: {gesture}\n"
         f"E-stop: {'latched' if state.emergency_stop_latched else 'clear'}"
     )
+
+
+def _format_voice_selection(tts_runtime: TTSService) -> str:
+    # Keep compatibility with the light-weight fake runtimes used by the
+    # developer CLI tests and by embedders that predate semantic profiles.
+    if not hasattr(tts_runtime, "profile"):
+        provider = getattr(tts_runtime, "provider", "unknown")
+        voice = getattr(tts_runtime, "voice", "unknown")
+        return f"{provider} / {voice}"
+    profile = getattr(tts_runtime, "profile", None)
+    provider = getattr(tts_runtime, "provider", "unknown")
+    voice = getattr(tts_runtime, "voice", "unknown")
+    if profile is None:
+        return f"legacy selection / {provider} {voice}"
+    return f"{profile.display_name} / {profile.provider.title()} {profile.provider_voice}"
 
 
 def _format_stt_status(voice: VoiceInputService) -> str:
@@ -475,12 +505,12 @@ def run_chat(
     if tts_runtime is None or not tts_runtime.enabled:
         output_fn("Voice: off")
     else:
-        output_fn(f"Voice: {tts_runtime.provider} / {tts_runtime.voice}")
+        output_fn(f"Voice: {_format_voice_selection(tts_runtime)}")
     output_fn(
         "Commands: /status, /reset, /think on, /think off, "
         "/robot status, /robot estop, /robot estop-reset, "
         "/talk, /stt status, /mic list, /mic status, /mic use <device>, "
-        "/voice status|on|off, /voice provider <name>, /voice use <voice>, "
+        "/voice status|on|off|<fenrir|bmo>, /voice provider <name>, /voice use <voice>, "
         "/speaker list|status|use <device>, /quit"
     )
 
@@ -575,6 +605,7 @@ def run_chat(
                 voice_status = tts_runtime.status()
                 output_fn(
                     f"Voice output: {'on' if voice_status.enabled else 'off'}\n"
+                    f"Profile: {_format_voice_selection(tts_runtime)}\n"
                     f"Provider: {voice_status.provider}\n"
                     f"Voice: {voice_status.voice}\n"
                     f"Speed: {voice_status.speed:g}\n"
@@ -590,6 +621,26 @@ def run_chat(
                 tts_runtime.set_enabled(command.endswith("on"))
                 output_fn(f"Voice output {'on' if tts_runtime.enabled else 'off'}.")
             continue
+        if command == "/voice" or command.startswith("/voice "):
+            requested_profile = user_text[len("/voice") :].strip()
+            if requested_profile.casefold() in {"fenrir", "bmo"}:
+                if tts_runtime is None:
+                    output_fn("Voice output unavailable.")
+                    continue
+                switch_profile = getattr(tts_runtime, "set_profile", None)
+                if not callable(switch_profile):
+                    output_fn("Voice profiles unavailable in this runtime.")
+                    continue
+                try:
+                    switch_profile(requested_profile)
+                except ValueError as exc:
+                    output_fn(f"Voice configuration error: {exc}")
+                else:
+                    output_fn(
+                        f"Voice profile selected for this session: "
+                        f"{_format_voice_selection(tts_runtime)}"
+                    )
+                continue
         if command == "/voice provider" or command.startswith("/voice provider "):
             if tts_runtime is None:
                 output_fn("Voice output unavailable.")
@@ -785,6 +836,7 @@ def voice_command(
     debug_latency: bool = False,
     face: bool = False,
     fullscreen: bool = False,
+    voice_profile: str | None = None,
     output_fn: OutputFunction = print,
 ) -> int:
     """Run local continuous wake/VAD/conversation/speech mode."""
@@ -827,7 +879,11 @@ def voice_command(
             state_sink=(face_controller.observe_robot_state if face_controller else None),
         )
         voice_input = create_voice_runtime(config, paths)
-        tts = create_tts_runtime(config, paths)
+        tts = (
+            create_tts_runtime(config, paths)
+            if voice_profile is None
+            else create_tts_runtime(config, paths, profile=voice_profile)
+        )
         service = create_conversation(
             config,
             tool_executor=robot.tools,
@@ -854,7 +910,7 @@ def voice_command(
         )
         output_fn(f"STT: whisper.cpp / {config.stt_model}")
         output_fn(f"LLM: {config.llm_model}")
-        output_fn(f"Voice: {tts.provider} / {tts.voice}")
+        output_fn(f"Voice: {_format_voice_selection(tts)}")
         barge_status = config.barge_in_mode if config.barge_in_enabled else "disabled"
         output_fn(f"Barge-in: {barge_status}")
         if face:
@@ -1111,6 +1167,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the animated prototype face while voice mode runs",
     )
     voice_parser.add_argument(
+        "--voice",
+        dest="voice_profile",
+        choices=("fenrir", "bmo"),
+        help="select semantic voice profile for this session",
+    )
+    voice_parser.add_argument(
         "--fullscreen",
         action="store_true",
         help="use fullscreen for the optional face view",
@@ -1171,6 +1233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             debug_latency=args.debug_latency,
             face=args.face,
             fullscreen=args.fullscreen,
+            voice_profile=args.voice_profile,
         )
     if args.command == "face":
         return face_command(fullscreen=args.fullscreen)

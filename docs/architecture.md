@@ -196,13 +196,47 @@ memory. The explicit benchmark is separate from conversation and playback:
 ```text
 tts-benchmark
   -> fixed eight-phrase English corpus
-  -> four Kokoro plus two Piper candidates, sequentially
+  -> four Kokoro plus two curated Piper candidates, plus optional BMO when installed
   -> labeled retained WAV samples in ignored runtime storage
   -> per-sample and aggregate timing report
 ```
 
 The benchmark makes no LLM or STT calls. A guarded explicit cleanup removes
 one direct benchmark run, never the benchmark root or an arbitrary path.
+
+## Voice profiles and restored BMO compatibility
+
+Voice choice is a small semantic layer above the provider adapters:
+
+```text
+VoiceProfile("fenrir") -> KokoroTTS / am_fenrir
+VoiceProfile("bmo")    -> PiperTTS / bmo
+```
+
+`VoiceProfile` is defined in `jarvis.audio.tts.profiles`; it owns the stable
+profile ID, display name, provider mapping, language/streaming capability, and
+provenance note. `TTSService` resolves profiles centrally. Conversation,
+robot tools, safety, and the face never see provider-specific voice IDs. The
+legacy provider/voice configuration remains accepted when `tts_profile` is
+omitted, which keeps existing private configurations working.
+
+The BMO mapping is deliberately conditional. `create_tts_providers()` adds the
+`bmo` Piper voice only when the original upstream files exist at
+`voices/bmo-custom.onnx` and `voices/bmo-custom.onnx.json`. No download is
+performed at startup and no imitation or cloned voice is generated. The old
+Piper subprocess path is not restored; the same ONNX model is consumed by the
+current provider-neutral Piper adapter. If the files are absent, selecting BMO
+fails with an explicit configuration message rather than silently selecting
+Fenrir.
+
+CLI selection (`python -m jarvis voice --voice fenrir|bmo`) and the trusted
+interactive commands (`/voice fenrir`, `/voice bmo`, `/voice status`) stop any
+active playback before switching. The generation-aware speech pipeline applies
+the same sentence chunking, bounded queue, Markdown normalization, and late-
+audio cancellation rules to both profiles. BMO uses the complete-sentence
+fallback because the legacy Piper model does not expose Kokoro-style streaming.
+The BMO face remains an independent observer and is not selected or changed by
+the voice profile.
 
 ## Phase 2C3.1a lossless wake-barge handoff
 
@@ -219,7 +253,8 @@ SoundDeviceRealtimeInput (fixed 30 ms, 16 kHz PCM16 frames)
        -> STOP -> injected integration -> SafeRobotController/SafetySupervisor/simulator
        -> otherwise -> ConversationService.respond(transcript)
                     -> existing LLM/tool/policy/SafetySupervisor/simulator flow
-  -> TTSService normalizes display Markdown and synthesizes Kokoro am_fenrir
+  -> TTSService resolves Fenrir or the restored BMO profile, normalizes display Markdown,
+     and synthesizes through the selected local provider
   -> AudioPlaybackService background handle
   -> VoiceStateMachine: PROCESSING -> SPEAKING -> IDLE
 ```

@@ -53,3 +53,7 @@ input.wav
 .DS_Store
 Thumbs.db
 ehthumbs.db
+
+# Local legacy BMO Piper voice assets
+voices/bmo-custom.onnx
+voices/bmo-custom.onnx.json

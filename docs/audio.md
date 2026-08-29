@@ -5,7 +5,8 @@ enabled continuous local voice mode. Continuous mode listens for a local
 **Hey Jarvis** wake phrase while idle and while monitoring spoken playback for
 an explicitly gated interruption. It uses deterministic VAD to bound one
 utterance, invokes local `whisper.cpp`, uses either deterministic local STOP or
-the existing conversation/tool path, and speaks through Kokoro `am_fenrir`.
+the existing conversation/tool path, and speaks through the selected local
+voice profile (Fenrir/Kokoro by default).
 There is no cloud speech service.
 
 ## Windows setup
@@ -130,8 +131,10 @@ ConversationService response text
 CLI prints the complete response before synthesis begins. Typed chat and
 `/talk` retain the Phase 2C2 synchronous synthesize/play behavior. Continuous
 voice mode uses the same provider-neutral audio contract with a background
-playback handle so the coordinator can cancel speech during barge-in. There is
-still no streaming synthesis or sentence chunking.
+playback handle so the coordinator can cancel speech during barge-in. Phase
+2C3.2 splits final text into deterministic sentence chunks and uses a bounded
+lookahead queue. Kokoro can yield provider chunks; Piper, including the legacy
+BMO model, uses the provider-neutral complete-sentence fallback.
 
 Normal response audio never touches disk. Both adapters return interleaved
 signed little-endian PCM16 plus sample rate and channel count. Kokoro float
@@ -166,20 +169,58 @@ Phase 2C2 uses CPU inference.
 ```text
 /voice status
 /voice on | /voice off
+/voice fenrir | /voice bmo
 /voice provider kokoro | /voice provider piper
 /voice use <allowlisted voice>
 /speaker list | /speaker status
 /speaker use <index or unique name>
 ```
 
-The selected English Jarvis voice and default is Kokoro `am_fenrir`. The other
-curated Kokoro candidates are `am_michael`, `am_puck`, and
-`bm_george`. Piper candidates are `en_US-joe-medium` and
-`en_US-john-medium`. Provider switching selects a conservative provider-local
-candidate, after which `/voice use` can refine it. These settings are
-session-only unless supplied in validated configuration. An unavailable
-package, model, voice, output, or synthesis/playback failure produces a concise
-message while keeping the assistant text visible.
+The semantic voice profiles are:
+
+- **Fenrir** (the default): Kokoro `am_fenrir`, using the current low-latency
+  local path.
+- **BMO**: the original upstream Be More Agent custom Piper model, exposed as
+  Piper voice `bmo` only when both `voices/bmo-custom.onnx` and
+  `voices/bmo-custom.onnx.json` are present. The repository does not download
+  or synthesize a replacement model.
+
+Select one for a continuous session with `python -m jarvis voice --voice fenrir`
+or `--voice bmo`, or switch a running developer chat with `/voice fenrir` or
+`/voice bmo`. `/voice status` reports the semantic profile and its concrete
+provider mapping. The face subsystem is independent, so the BMO prototype face
+can be used with either voice. Provider switching remains available for
+diagnostics and selects a provider-local curated voice; `/voice use` can refine
+that selection. These settings are session-only unless supplied in validated
+configuration. An unavailable package, model, voice, output, or
+synthesis/playback failure produces a concise message while keeping assistant
+text visible.
+
+Both profiles receive `prepare_text_for_speech()` output, never raw Markdown.
+Profile changes stop the active generation, clear playback, and invalidate
+warmup state before selecting the next provider. The existing generation-aware
+pipeline therefore discards late Piper/BMO audio just as it discards late
+Fenrir audio. BMO synthesis is not true provider streaming; it is still
+sentence-level and cancellable at the Jarvis pipeline boundary.
+
+### Restored BMO asset and provenance
+
+The historical Linux `setup.sh` downloaded the original model from the
+upstream Be More Agent release as `voices/bmo-custom.onnx` plus its JSON config.
+The legacy `agent.py` launched a Piper executable with `--output-raw` and played
+the returned mono 22050-Hz PCM. This was generated Piper TTS, not a library of
+pre-recorded greeting samples. The modern adapter keeps that model/config
+identity but loads it through the already-installed `piper-tts==1.7.0`
+provider-neutral adapter; no legacy executable or subprocess is reintroduced.
+
+The model and any source voice dataset are not tracked in this repository. Their
+complete license and redistribution provenance is unresolved, and the
+repository MIT license does not grant rights to them. Obtain the original files
+from a trusted source for private prototype use only and review their terms
+before redistribution. `python -m jarvis.core.preflight` reports the two
+historical BMO files as optional unless `tts_profile` is set to `bmo`, in which
+case they become selected readiness checks. See `NOTICE.md` for the separate
+dependency and asset notices. Historical source: https://github.com/brenpoly/be-more-agent
 
 Phase 2C2 accepts English only. The official Piper catalog has Danish voices,
 so the language boundary can support Danish later; the official Kokoro voice
@@ -193,9 +234,10 @@ set currently has no Danish voice. No Danish TTS model is installed here.
 ```
 
 The benchmark constructs only the TTS adapters. It makes no LLM, STT, network,
-microphone, or playback calls. It generates eight fixed phrases for all six
-voices and writes labeled WAVs beneath one timestamped ignored directory. Each
-row reports synthesis wall time, speech duration, real-time factor, sample
+microphone, or playback calls. It generates eight fixed phrases for the six
+curated voices, plus the optional BMO voice when its original files are
+installed, and writes labeled WAVs beneath one timestamped ignored directory.
+Each row reports synthesis wall time, speech duration, real-time factor, sample
 rate, first usable audio when the provider API exposes it, and output file.
 Summaries report median/mean synthesis time, median RTF, fastest/slowest, and
 short-utterance median.
@@ -237,7 +279,7 @@ IDLE (local wake inference; no persistence or LLM)
   -> anchored LocalVoiceCommandRouter
        -> STOP only -> SafeRobotController -> SafetySupervisor -> simulator
        -> otherwise -> ConversationService -> structured tools/safety/simulator
-  -> Kokoro am_fenrir synthesis
+  -> selected Fenrir/Kokoro or BMO/Piper synthesis
   -> SPEAKING (cancellable local playback)
   -> IDLE
 ```

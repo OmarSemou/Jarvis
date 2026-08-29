@@ -22,6 +22,7 @@ from .pipeline import (
     SpeechSessionHandle,
 )
 from .text import prepare_text_for_speech
+from .profiles import VoiceProfile, profile_for_selection, resolve_voice_profile
 
 
 DEFAULT_PROVIDER_VOICES = {
@@ -69,11 +70,12 @@ class TTSService:
         voice: str = "am_fenrir",
         speed: float = 1.0,
         language: str = "en",
+        profile: str | None = None,
         chunker: SpeechChunker | None = None,
         pipeline_settings: SpeechPipelineSettings = SpeechPipelineSettings(),
     ) -> None:
-        if set(providers) != set(DEFAULT_PROVIDER_VOICES):
-            raise ValueError("TTS providers must be exactly: kokoro, piper")
+        if not set(DEFAULT_PROVIDER_VOICES).issubset(providers):
+            raise ValueError("TTS providers must include: kokoro, piper")
         self.providers = dict(providers)
         self.playback = playback
         self.enabled = enabled
@@ -88,12 +90,36 @@ class TTSService:
         self._active_session: SpeechSessionHandle | None = None
         self._warmup_attempted = False
         self._warmup_failure: SynthesisFailure | None = None
-        self._validate_selection(provider, voice)
+        self._profile_id = profile_for_selection(provider, voice)
+        try:
+            self._validate_selection(provider, voice)
+        except ValueError:
+            if profile is not None and resolve_voice_profile(profile).id == "bmo":
+                raise ValueError(
+                    "The original BMO voice model is unavailable. Restore the "
+                    "preserved BMO voice asset before selecting this profile."
+                ) from None
+            raise
+        if profile is not None:
+            self.set_profile(profile)
+
+    @property
+    def profile(self) -> VoiceProfile | None:
+        """The semantic profile, or ``None`` for a legacy custom selection."""
+
+        if self._profile_id is None:
+            return None
+        return resolve_voice_profile(self._profile_id)
+
+    @property
+    def profile_id(self) -> str | None:
+        return self._profile_id
 
     def _validate_selection(self, provider: str, voice: str) -> None:
         selected = self.providers.get(provider)
         if selected is None:
-            raise ValueError("TTS provider must be one of: kokoro, piper")
+            allowed = ", ".join(sorted(self.providers))
+            raise ValueError(f"TTS provider must be one of: {allowed}")
         if voice not in selected.available_voices:
             raise ValueError(
                 f"Voice '{voice}' is not available for {provider}. "
@@ -117,15 +143,47 @@ class TTSService:
 
     def set_provider(self, provider: str) -> None:
         normalized = provider.strip().casefold()
-        if normalized not in self.providers:
-            raise ValueError("TTS provider must be one of: kokoro, piper")
+        if normalized not in self.providers or normalized not in DEFAULT_PROVIDER_VOICES:
+            allowed = ", ".join(sorted(self.providers))
+            raise ValueError(f"TTS provider must be one of: {allowed}")
+        default_voice = DEFAULT_PROVIDER_VOICES[normalized]
+        self._validate_selection(normalized, default_voice)
+        self.stop()
         self.provider = normalized
-        self.voice = DEFAULT_PROVIDER_VOICES[normalized]
+        self.voice = default_voice
+        self._profile_id = profile_for_selection(self.provider, self.voice)
+        self._warmup_attempted = False
+        self._warmup_failure = None
 
     def set_voice(self, voice: str) -> None:
         normalized = voice.strip()
         self._validate_selection(self.provider, normalized)
+        self.stop()
         self.voice = normalized
+        self._profile_id = profile_for_selection(self.provider, self.voice)
+        self._warmup_attempted = False
+        self._warmup_failure = None
+
+    def set_profile(self, profile_id: str) -> None:
+        """Switch semantic voice profiles and stop any prior session safely."""
+
+        profile = resolve_voice_profile(profile_id)
+        provider = self.providers.get(profile.provider)
+        if provider is None or profile.provider_voice not in provider.available_voices:
+            if profile.id == "bmo":
+                raise ValueError(
+                    "The original BMO voice model is unavailable. Restore the "
+                    "preserved BMO voice asset before selecting this profile."
+                )
+            raise ValueError(
+                f"Voice profile '{profile.id}' is unavailable from the configured providers."
+            )
+        self.stop()
+        self.provider = profile.provider
+        self.voice = profile.provider_voice
+        self._profile_id = profile.id
+        self._warmup_attempted = False
+        self._warmup_failure = None
 
     def synthesize(self, text: str) -> SpeechSynthesisResult:
         if not self.enabled:

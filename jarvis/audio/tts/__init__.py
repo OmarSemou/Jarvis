@@ -18,6 +18,14 @@ from .pipeline import (
     SpeechSessionHandle,
 )
 from .service import SpeechOutputResult, TTSService, TTSStatus
+from .profiles import (
+    BMO_PROFILE,
+    FENRIR_PROFILE,
+    VOICE_PROFILES,
+    VoiceProfile,
+    profile_for_selection,
+    resolve_voice_profile,
+)
 
 __all__ = [
     "SpeechSynthesisResult",
@@ -39,4 +47,10 @@ __all__ = [
     "SpeechOutputResult",
     "TTSService",
     "TTSStatus",
+    "VoiceProfile",
+    "FENRIR_PROFILE",
+    "BMO_PROFILE",
+    "VOICE_PROFILES",
+    "resolve_voice_profile",
+    "profile_for_selection",
 ]
