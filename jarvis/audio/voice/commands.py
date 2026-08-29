@@ -39,6 +39,12 @@ _STOP_GRAMMAR = frozenset(
         ("hey", "jarvis", "stop", "now"),
         ("hey", "jarvis", "please", "stop"),
         ("hey", "jarvis", "please", "stop", "now"),
+        ("bmo", "stop"),
+        ("bmo", "stop", "now"),
+        ("hey", "bmo", "stop"),
+        ("hey", "bmo", "stop", "now"),
+        ("hey", "bmo", "please", "stop"),
+        ("hey", "bmo", "please", "stop", "now"),
     }
 )
 
@@ -84,6 +90,8 @@ _WAKE_ONLY_GRAMMAR = frozenset(
     {
         ("jarvis",),
         ("hey", "jarvis"),
+        ("bmo",),
+        ("hey", "bmo"),
     }
 )
 

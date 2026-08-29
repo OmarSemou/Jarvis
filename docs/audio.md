@@ -1,6 +1,6 @@
 # Phase 2C3.2 responsive local voice and early speech
 
-Jarvis supports both the preserved `/talk` developer path and an explicitly
+BMO supports both the preserved `/talk` developer path and an explicitly
 enabled continuous local voice mode. Continuous mode listens for a local
 **Hey Jarvis** wake phrase while idle and while monitoring spoken playback for
 an explicitly gated interruption. It uses deterministic VAD to bound one
@@ -8,6 +8,11 @@ utterance, invokes local `whisper.cpp`, uses either deterministic local STOP or
 the existing conversation/tool path, and speaks through the selected local
 voice profile (Fenrir/Kokoro by default).
 There is no cloud speech service.
+
+The current classifier still recognizes **Hey Jarvis** because that is the
+available pinned model; this wake phrase is a compatibility limitation, not the
+robot's active identity. BMO identity is established by the immutable
+personality/profile layer.
 
 ## Windows setup
 
@@ -35,7 +40,7 @@ modify global `PATH`.
 
 The default setup installs the selected base model. `-Models small` installs or
 verifies the higher-capacity alternative without deleting base;
-`-Models base,small` and `-Models all` install both. Jarvis startup never invokes
+`-Models base,small` and `-Models all` install both. BMO startup never invokes
 this installer or downloads a model.
 
 ## Commands
@@ -213,6 +218,18 @@ pre-recorded greeting samples. The modern adapter keeps that model/config
 identity but loads it through the already-installed `piper-tts==1.7.0`
 provider-neutral adapter; no legacy executable or subprocess is reintroduced.
 
+The current private checkout contains the expected ignored artifacts. Their
+local fingerprints are:
+
+| file | size | SHA-256 |
+| --- | ---: | --- |
+| `voices/bmo-custom.onnx` | 63,511,038 bytes | `0b5a2f9e035f7798977320167f7b1bc5a5eeab4b15470d975b80fc56ae3bd8e0` |
+| `voices/bmo-custom.onnx.json` | 7,105 bytes | `32e87407fd1a33b1282d6ddc80cc2af58eeec86d5c004062100732a8e996ca05` |
+
+The JSON reports 22,050 Hz, `en-us`, eSpeak phonemes, one speaker, an empty
+speaker map, dataset `ko_voice_dojo`, and Piper version `1.0.0`. These are
+observed local values, not a claim that the model or character is MIT-licensed.
+
 The model and any source voice dataset are not tracked in this repository. Their
 complete license and redistribution provenance is unresolved, and the
 repository MIT license does not grant rights to them. Obtain the original files
@@ -383,14 +400,16 @@ performance remains environment-dependent.
 
 After VAD and STT, empty text and exact known Whisper no-speech markers such as
 `[BLANK_AUDIO]` and `[ Silence ]` are discarded before conversation or TTS. A
-wake-only transcript (`Jarvis` or `Hey Jarvis`) from handoff pre-roll is also
+wake-only transcript (`Jarvis`, `Hey Jarvis`, `BMO`, or `Hey BMO`) from handoff
+pre-roll is also
 discarded rather than sent to Qwen.
 Recordings shorter than the configured VAD-confirmed speech minimum are also
 discarded. Debug mode reports `[VOICE] no_speech_discarded`; normal mode stays
 quiet and returns to `IDLE`.
 
 An anchored, punctuation-normalizing allowlist recognizes only explicit STOP
-forms such as `stop`, `please stop`, and `hey jarvis stop`. Negations,
+forms such as `stop`, `please stop`, `hey bmo stop`, and legacy `hey jarvis stop`.
+Negations,
 questions, stop-sign discussion, and every other robot action do not match.
 Matched STOP bypasses Qwen and executes this existing semantic path:
 
@@ -415,7 +434,7 @@ Voice-mode startup lazily loads and warms wake/VAD inference. When
 `tts_preload=true`, Kokoro synthesizes one tiny phrase once; the returned audio
 is discarded and never played or written. Whisper remains process-per-command.
 Ollama requests in this mode use `voice_ollama_keep_alive` (`30m` by default),
-but Jarvis never starts Ollama or pulls a model automatically.
+but BMO never starts Ollama or pulls a model automatically.
 
 Use `python -m jarvis voice --debug-latency` or set
 `voice_debug_latency=true` to print real monotonic timings for wake-to-speech,
@@ -500,7 +519,7 @@ Normal conversation uses validated Ollama temperature `0.2` by default, with
 thinking still off. This is a conservative factual-assistant setting; it does
 not eliminate hallucinations. The immutable prompt requires normal general-
 knowledge answers, treats robot tools as optional action mechanisms, and tells
-Jarvis to acknowledge uncertainty instead of inventing facts.
+BMO to acknowledge uncertainty instead of inventing facts.
 
 Continuous microphone frames, wake buffers, VAD scores, and rejected room
 audio remain in memory and are not logged. Only an accepted utterance becomes

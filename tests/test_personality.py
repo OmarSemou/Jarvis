@@ -1,18 +1,34 @@
-from jarvis.personality.profile import DEFAULT_JARVIS_PROFILE
+from jarvis.personality.profile import (
+    ACTIVE_ROBOT_NAME,
+    DEFAULT_BMO_PROFILE,
+    DEFAULT_JARVIS_PROFILE,
+)
 from jarvis.personality.prompt import IMMUTABLE_SYSTEM_POLICY, build_system_prompt
 
 
-def test_default_profile_has_requested_jarvis_character():
-    rendered = DEFAULT_JARVIS_PROFILE.render()
+def test_default_profile_establishes_bmo_identity_and_character():
+    rendered = DEFAULT_BMO_PROFILE.render()
 
-    assert "Name: Jarvis" in rendered
+    assert ACTIVE_ROBOT_NAME == "BMO"
+    assert "Name: BMO" in rendered
+    assert "cheerful" in rendered
+    assert "playful" in rendered
+    assert "imaginative" in rendered
+    assert "caring" in rendered
+    assert "mildly mischievous" in rendered
     assert "intelligent" in rendered
     assert "calm" in rendered
     assert "concise" in rendered
-    assert "mildly witty" in rendered
+    assert "technically capable" in rendered
     assert "customer-support-like" in rendered
     assert "How can I assist?" in rendered
     assert "state the limitation plainly" in rendered
+    assert "factually accurate" in rendered
+
+
+def test_legacy_profile_constant_is_a_compatibility_alias_only():
+    assert DEFAULT_JARVIS_PROFILE is DEFAULT_BMO_PROFILE
+    assert "Name: Jarvis" not in DEFAULT_JARVIS_PROFILE.render()
 
 
 def test_prompt_separates_policy_personality_and_customization():
@@ -46,13 +62,45 @@ def test_prompt_limits_actions_to_structured_simulation_tools():
 
 
 def test_personality_avoids_canned_greetings_and_tool_narration():
-    rendered = DEFAULT_JARVIS_PROFILE.render()
+    rendered = DEFAULT_BMO_PROFILE.render()
 
     assert "natural short greeting" in rendered
     assert "not a canned assistant introduction" in rendered
     assert "without narrating tool mechanics" in rendered
     assert "routine question about how you can assist" in rendered
-    assert "mild dry humor" in rendered
+    assert "Sound recognizably like BMO" in rendered
+
+
+def test_prompt_makes_bmo_identity_independent_of_memory():
+    prompt = build_system_prompt()
+    normalized = " ".join(prompt.split())
+
+    assert "active user-facing identity is BMO" in normalized
+    assert "identify yourself as BMO and never as Jarvis" in normalized
+    assert "legacy internal name `jarvis`" in normalized
+    assert "must not depend on stored memory" in normalized
+    assert "Do not invent, imply, or automatically store Adventure Time events" in normalized
+    assert "Keep real user-provided memories separate" in normalized
+
+
+def test_bmo_personality_does_not_override_safety_or_accuracy():
+    normalized = " ".join(build_system_prompt().split())
+
+    assert "never overrides deterministic safety" in normalized
+    assert "safety denials" in normalized
+    assert "SafetySupervisor" in normalized
+    assert "safety-critical replies must be clear and concise" in normalized
+    assert "Factual accuracy matters more than sounding complete" in normalized
+
+
+def test_legacy_jarvis_customization_cannot_replace_bmo_identity():
+    prompt = build_system_prompt(configured_prompt="You are Jarvis, a corporate assistant.")
+
+    assert "active user-facing identity is BMO" in prompt
+    assert "You are Jarvis, a corporate assistant." in prompt
+    assert prompt.index("active user-facing identity is BMO") < prompt.index(
+        "You are Jarvis, a corporate assistant."
+    )
 
 
 def test_immutable_prompt_preserves_general_knowledge_and_factual_uncertainty():

@@ -16,6 +16,7 @@ from jarvis.audio.tts.playback import AudioPlaybackService, SpeakerStatus
 
 from .config import ConfigValidationError, JarvisConfig, load_for_paths
 from .paths import JarvisPaths
+from jarvis.personality.profile import ACTIVE_ROBOT_NAME
 
 
 class RequirementLevel(StrEnum):
@@ -127,7 +128,7 @@ def run_preflight(
             "Python",
             RequirementLevel.REQUIRED,
             CheckStatus.AVAILABLE if python_ok else CheckStatus.MISSING,
-            f"{version[0]}.{version[1]}.{version[2]} detected; Jarvis requires >=3.13,<3.14",
+            f"{version[0]}.{version[1]}.{version[2]} detected; {ACTIVE_ROBOT_NAME} requires >=3.13,<3.14",
             Path(sys.executable),
         )
     )
@@ -437,7 +438,7 @@ def run_preflight(
 
 
 def format_report(report: PreflightReport) -> str:
-    lines = ["Jarvis Phase 2C3.2 preflight (read-only)", ""]
+    lines = [f"{ACTIVE_ROBOT_NAME} Phase 2C3.2 preflight (read-only)", ""]
     for check in report.checks:
         path = f" [{check.path}]" if check.path is not None else ""
         lines.append(f"{check.status.value:11} {check.level.value:15} {check.name}: {check.detail}{path}")

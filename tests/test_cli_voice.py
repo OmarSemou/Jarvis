@@ -165,7 +165,7 @@ def test_talk_passes_transcript_to_existing_conversation_service():
     assert voice.started == voice.finished == 1
     assert provider.requests[0].messages[-1].content == "Look right."
     assert "You (voice) > Look right." in output
-    assert "Jarvis > There." in output
+    assert "BMO > There." in output
     assert any(line.startswith("[STT] audio=2.00s") for line in output)
 
 
@@ -270,7 +270,7 @@ def test_typed_chat_still_works_when_voice_runtime_exists():
     )
 
     assert provider.requests[0].messages[-1].content == "Typed message"
-    assert "Jarvis > Typed reply" in output
+    assert "BMO > Typed reply" in output
 
 
 def test_stt_status_is_local_and_reports_selected_model(tmp_path):
@@ -376,5 +376,5 @@ def test_tts_failure_keeps_visible_assistant_text_and_chat_alive():
     )
 
     assert result == 0
-    assert "Jarvis > Still visible." in output
+    assert "BMO > Still visible." in output
     assert any(line.startswith("Voice output error: mock failure") for line in output)

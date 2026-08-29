@@ -1,9 +1,8 @@
 # Phase 2D face
 
 Phase 2D adds a provider-neutral, observation-only face subsystem. The active
-desktop prototype uses the repository's existing BMO artwork as-is. This is a
-temporary visual prototype, not a claim that the eventual Jarvis design or
-hardware face is BMO.
+desktop prototype uses the repository's existing BMO artwork as-is. This is the
+current BMO face identity; the eventual physical face design is not determined.
 
 ## What is active
 
@@ -63,7 +62,7 @@ The repository is derived from the MIT-licensed upstream Be More Agent project;
 creator, source URL, and separate redistribution terms are not established by
 the repository. It is therefore documented as private prototype artwork only;
 do not publish or redistribute it until provenance is resolved. A later phase
-must add a separately licensed Jarvis asset set and can replace the asset
+must add a separately licensed BMO asset set and can replace the asset
 provider without changing face state or controller contracts.
 
 The simulator and face are not hardware-safety validation. Physical e-stop,

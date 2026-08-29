@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jarvis-local-companion"
 version = "0.6.1"
-description = "Local-first Jarvis corrected voice, conversation, and safe robot simulation"
+description = "Local-first BMO voice, conversation, and safe robot simulation (internal package: jarvis)"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "MIT"

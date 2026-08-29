@@ -1,4 +1,4 @@
-# Jarvis safety policy
+# BMO safety policy (internal package: `jarvis`)
 
 ## Fundamental rule
 

@@ -27,7 +27,7 @@ class TkinterFaceView:
         width: int = 800,
         height: int = 480,
         fullscreen: bool = False,
-        title: str = "Jarvis Face — BMO prototype",
+        title: str = "BMO Face — prototype",
         gallery: bool = False,
         on_close: Callable[[], None] | None = None,
         on_ready: Callable[["TkinterFaceView"], None] | None = None,

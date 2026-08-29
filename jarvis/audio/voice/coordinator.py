@@ -29,6 +29,7 @@ from jarvis.audio.vad.segmenter import (
 from jarvis.audio.wake.base import WakeWordProvider
 from jarvis.core.conversation import ConversationService
 from jarvis.llm.base import LLMError
+from jarvis.personality.profile import ACTIVE_ROBOT_NAME
 
 from .commands import (
     LocalVoiceCommandExecutor,
@@ -671,7 +672,7 @@ class VoiceModeCoordinator:
                     f"[VOICE] local_stop latency={stopped_at - stt_ended_at:.3f}s"
                 )
             acknowledgement = "Stopped." if execution.success else "Stop failed safely."
-            self.output_fn(f"Jarvis > {acknowledgement}")
+            self.output_fn(f"{ACTIVE_ROBOT_NAME} > {acknowledgement}")
             interrupted = self._speak(acknowledgement, tracker)
             metrics = tracker.metrics()
             self.latency.add(metrics)
@@ -682,7 +683,7 @@ class VoiceModeCoordinator:
         tracker.mark("llm_start")
         response = self.conversation.respond(transcription.text)
         tracker.mark("llm_end")
-        self.output_fn(f"Jarvis > {response.text}")
+        self.output_fn(f"{ACTIVE_ROBOT_NAME} > {response.text}")
         interrupted = self._speak(response.text, tracker)
 
         metrics = tracker.metrics()

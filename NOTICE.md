@@ -2,7 +2,9 @@
 
 ## Upstream project
 
-Jarvis is derived from **Be More Agent**, originally created by brenpoly:
+The active user-facing robot identity is **BMO**. The repository and Python
+package retain `Jarvis`/`jarvis` as internal compatibility names. This project
+is derived from **Be More Agent**, originally created by brenpoly:
 
 - Source: https://github.com/brenpoly/be-more-agent
 - Upstream copyright: Copyright (c) 2026 brenpoly

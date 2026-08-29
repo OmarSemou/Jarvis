@@ -1,4 +1,4 @@
-"""Provider-neutral animated-face contracts for the Jarvis prototype.
+"""Provider-neutral animated-face contracts for the BMO prototype.
 
 The face observes application, voice, and simulated-robot state.  It owns no
 tool, motion, safety, audio, camera, or hardware authority.

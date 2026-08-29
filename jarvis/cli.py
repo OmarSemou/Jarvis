@@ -73,6 +73,7 @@ from jarvis.llm.base import (
     MessageRole,
 )
 from jarvis.llm.ollama import OllamaLLM, OllamaSettings
+from jarvis.personality.profile import ACTIVE_ROBOT_NAME
 from jarvis.personality.prompt import build_system_prompt
 from jarvis.robot.controller import SafeRobotController, create_simulated_controller
 from jarvis.robot.safety import SafetyAuthority
@@ -431,7 +432,7 @@ def _respond(
     except LLMError as exc:
         output_fn(f"Error: {exc}")
         return None
-    output_fn(f"Jarvis > {response.text}")
+    output_fn(f"{ACTIVE_ROBOT_NAME} > {response.text}")
     if tts_runtime is not None and tts_runtime.enabled:
         start_speech = getattr(tts_runtime, "start_speech", None)
         if callable(start_speech) and callable(
@@ -493,7 +494,7 @@ def run_chat(
     output_fn: OutputFunction = print,
 ) -> int:
     status = service.status()
-    output_fn("Jarvis Local")
+    output_fn(f"{ACTIVE_ROBOT_NAME} Local")
     output_fn(f"Model: {status.model}")
     output_fn(f"Thinking: {'on' if status.thinking else 'off'}")
     if voice_runtime is not None:
@@ -903,7 +904,7 @@ def voice_command(
                 face_controller.observe_playback_event if face_controller else None
             ),
         )
-        output_fn("Jarvis Voice")
+        output_fn(f"{ACTIVE_ROBOT_NAME} Voice")
         output_fn(
             f"Wake word: {WAKE_PHRASE} "
             "(the model is trained for the full phrase)"
@@ -949,7 +950,10 @@ def llm_check_command(output_fn: OutputFunction = print) -> int:
             model=config.llm_model,
             messages=(
                 ChatMessage(MessageRole.SYSTEM, "Return only a short final answer. Do not use tools."),
-                ChatMessage(MessageRole.USER, "Reply with exactly: Jarvis local check OK"),
+                ChatMessage(
+                    MessageRole.USER,
+                    f"Reply with exactly: {ACTIVE_ROBOT_NAME} local check OK",
+                ),
             ),
             thinking=False,
             temperature=config.llm_temperature,
@@ -995,7 +999,7 @@ def stt_check_command(
     except (ConfigValidationError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
         return 2
-    output_fn("Jarvis local STT check (no LLM call)")
+    output_fn(f"{ACTIVE_ROBOT_NAME} local STT check (no LLM call)")
     result = _capture_voice(
         voice,
         input_fn=input_fn,
@@ -1055,7 +1059,7 @@ def stt_benchmark_command(
             output_fn(f"STT benchmark unavailable for {model}: {readiness_error.message}")
             return 1
 
-    output_fn("Jarvis local STT benchmark (no LLM or network calls)")
+    output_fn(f"{ACTIVE_ROBOT_NAME} local STT benchmark (no LLM or network calls)")
     output_fn(
         "Record each phrase once. The exact same temporary WAV will be used by base and small."
     )
@@ -1118,7 +1122,10 @@ def tts_benchmark_command(
                         f"{failure.message}"
                     )
                     return 1
-        output_fn("Jarvis local TTS benchmark (no LLM, STT, playback, or network calls)")
+        output_fn(
+            f"{ACTIVE_ROBOT_NAME} local TTS benchmark "
+            "(no LLM, STT, playback, or network calls)"
+        )
         report = run_tts_benchmark(providers, paths.tts_benchmark_dir)
         output_fn(format_tts_benchmark_report(report))
         return 0 if report.successful else 1

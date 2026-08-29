@@ -22,7 +22,7 @@ class CLIProvider:
         self.requests.append(request)
         if self.error:
             raise self.error
-        return LLMResponse("Hello from local Jarvis.", request.model)
+        return LLMResponse("Hello from local BMO.", request.model)
 
     def close(self):
         pass
@@ -53,10 +53,10 @@ def test_cli_commands_and_mocked_conversation():
     )
 
     assert result == 0
-    assert any("Jarvis Local" in line for line in output)
+    assert any("BMO Local" in line for line in output)
     assert any("Model: qwen3:8b" in line for line in output)
     assert any("Thinking on." in line for line in output)
-    assert any("Jarvis > Hello from local Jarvis." in line for line in output)
+    assert any("BMO > Hello from local BMO." in line for line in output)
     assert any("Conversation reset." in line for line in output)
     assert provider.requests[0].thinking is True
     assert service.history == ()
@@ -165,8 +165,8 @@ def test_cli_prints_concise_robot_event_before_natural_response():
 
     assert result == 0
     assert "[ROBOT] gesture=wave" in output
-    assert "Jarvis > Hey." in output
-    assert output.index("[ROBOT] gesture=wave") < output.index("Jarvis > Hey.")
+    assert "BMO > Hey." in output
+    assert output.index("[ROBOT] gesture=wave") < output.index("BMO > Hey.")
 
 
 def test_markdown_display_and_history_remain_exact_while_tts_gets_plain_speech():
@@ -224,7 +224,7 @@ def test_markdown_display_and_history_remain_exact_while_tts_gets_plain_speech()
         output_fn=output.append,
     ) == 0
 
-    assert f"Jarvis > {display_text}" in output
+    assert f"BMO > {display_text}" in output
     assert service.history[-1].role is MessageRole.ASSISTANT
     assert service.history[-1].content == display_text
     assert speech_provider.texts == ["Use the Power Stroke."]

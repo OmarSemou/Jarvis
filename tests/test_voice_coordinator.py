@@ -544,7 +544,7 @@ def test_normal_wake_handoff_preserves_immediate_first_command_word():
     assert instance._process_capture(utterance, wake_at=wake_at) is None
     assert voice_input.audio == [utterance.pcm16]
     assert conversation.requests == ["Hey Jarvis, how old is the universe?"]
-    assert "Jarvis > About 13.8 billion years." in output
+    assert "BMO > About 13.8 billion years." in output
     assert any("[VOICE] wake_audio" in line for line in output)
     assert source.started == source.stopped == 0
 
@@ -791,7 +791,7 @@ def test_warm_synthesis_failure_keeps_assistant_text_and_returns_safely():
 
     assert instance.run(max_interactions=1) == 0
     assert conversation.requests == ["Hello."]
-    assert "Jarvis > Hey." in output
+    assert "BMO > Hey." in output
     assert any("voice failed" in line for line in output)
 
 

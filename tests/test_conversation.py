@@ -51,7 +51,7 @@ def test_system_and_personality_prompt_reach_provider():
     assert system.role is MessageRole.SYSTEM
     assert "<immutable_system_policy>" in system.content
     assert "<personality_profile>" in system.content
-    assert "Name: Jarvis" in system.content
+    assert "Name: BMO" in system.content
     assert "Address the user as Captain." in system.content
 
 

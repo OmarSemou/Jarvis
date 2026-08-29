@@ -25,6 +25,8 @@ from jarvis.integrations.voice_stop import SafeLocalVoiceCommandExecutor
         "hey jarvis stop",
         "  HEY JARVIS, STOP!  ",
         "Hey Jarvis, please stop now.",
+        "bmo stop",
+        "Hey BMO, please stop now.",
     ),
 )
 def test_anchored_local_stop_grammar_accepts_only_explicit_stop_utterances(text):
@@ -60,12 +62,18 @@ def test_plain_word_silence_is_not_mistaken_for_a_whisper_marker():
     assert not is_no_speech_transcript("silence")
 
 
-@pytest.mark.parametrize("text", ("Jarvis", "Hey Jarvis", "  HEY, JARVIS! "))
+@pytest.mark.parametrize(
+    "text",
+    ("Jarvis", "Hey Jarvis", "  HEY, JARVIS! ", "BMO", "Hey BMO"),
+)
 def test_wake_only_filter_matches_only_the_activation_phrase(text):
     assert is_wake_only_transcript(text)
 
 
-@pytest.mark.parametrize("text", ("Hey Jarvis stop", "Hey Jarvis hello", "hello"))
+@pytest.mark.parametrize(
+    "text",
+    ("Hey Jarvis stop", "Hey Jarvis hello", "Hey BMO stop", "hello"),
+)
 def test_wake_only_filter_preserves_commands_and_conversation(text):
     assert not is_wake_only_transcript(text)
 

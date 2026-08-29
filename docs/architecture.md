@@ -1,4 +1,4 @@
-# Jarvis architecture
+# BMO architecture (internal package: `jarvis`)
 
 ## Current boundary
 
@@ -19,6 +19,25 @@ compatibility launcher. Streaming STT/LLM text, full echo cancellation, camera
 capture, memory storage, and physical hardware remain outside the new path.
 Phase 2D adds an observation-only animated face using the existing BMO artwork
 as a read-only desktop prototype.
+
+## Active identity boundary
+
+The active user-facing robot identity is **BMO**. The immutable personality
+profile and system policy establish that identity even when memory is disabled,
+empty, deleted, or unavailable. BMO's tone is cheerful, curious, playful, and
+imaginative while remaining technically competent and factually accurate.
+
+The `jarvis/` package, `JarvisConfig`, runtime paths, and existing test names
+are internal legacy implementation names retained for compatibility. They are
+not the robot's conversational identity, and this phase does not rename them.
+The personality is inspired by BMO, but the robot must not invent fictional
+Adventure Time experiences as real persistent memories. Safety policy and
+deterministic tool results always override personality.
+
+When persistent memory is added, examples should describe this real prototype,
+for example: “Remember that I prefer the original BMO voice,” “Remember that
+Fenrir is my alternate BMO voice,” or “Remember that your name is BMO.” BMO's
+identity must remain available when the memory store is empty or unavailable.
 
 Importing any `jarvis` module must not start a GUI, open devices, invoke
 subprocesses, perform network requests, or write files. Ollama transport is
@@ -93,7 +112,8 @@ Each batch is also capped at eight calls; an oversized batch executes nothing.
 The system message is assembled predictably from three explicit sections:
 
 1. immutable Phase 2B system/capability policy;
-2. the structured Jarvis personality profile;
+2. the structured BMO personality profile (implemented under the internal
+   `jarvis` package);
 3. optional configured customization, marked as untrusted preference input.
 
 The Ollama adapter owns transport details. It passes an explicit validated
@@ -459,6 +479,6 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.face.demo`: explicit face and gallery developer command.
 
 Future modules may add streaming/early STT, safe LLM text streaming, real AEC,
-memory, a separately licensed final Jarvis face, vision, external integrations,
+memory, a separately licensed final BMO face, vision, external integrations,
 physical robot components, and ESP32 transport. Microphone/STT/TTS testing, the
 simulator, and the face are not hardware safety validation.

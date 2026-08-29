@@ -1,12 +1,18 @@
-# Jarvis
+# BMO (internal project name: Jarvis)
 
-Jarvis is becoming a fully local, API-free personal companion robot. The
+BMO is becoming a fully local, API-free personal companion robot. The
 repository now includes the **Phase 1 architecture and safety foundation**,
 **Phase 2A local text conversation**, **Phase 2B structured robot tools with a
 deterministic simulator**, **Phase 2C3.2 responsive local voice interaction**,
 and **Phase 2D animated face prototype**
 for Windows 11. Continuous listening is an explicitly enabled local wake-word
-mode; Jarvis does not control a physical robot.
+mode; BMO does not control a physical robot.
+
+The active user-facing identity is **BMO**. The repository and Python package
+retain `Jarvis`/`jarvis` as internal legacy implementation names for
+compatibility; they are not the robot's conversational identity. BMO's
+personality is character-inspired, but this prototype must only remember real
+user-provided information and real-world events.
 
 The project is derived from
 [Be More Agent](https://github.com/brenpoly/be-more-agent), an MIT-licensed
@@ -98,7 +104,7 @@ Install and start Ollama separately, then install the model manually if needed:
 ollama pull qwen3:8b
 ```
 
-Jarvis never pulls or downloads a model automatically. Start local text chat
+BMO never pulls or downloads a model automatically. Start local text chat
 with:
 
 ```powershell
@@ -127,7 +133,8 @@ configuration, start local hands-free interaction with:
 
 The active classifier is the pinned official OpenWakeWord **Hey Jarvis** model
 downloaded into ignored local runtime storage. Saying only “Jarvis” can have a
-higher miss rate. After each response Jarvis returns to requiring the wake
+higher miss rate. This is a legacy wake phrase; the active robot identity is
+BMO. After each response BMO returns to requiring the wake
 phrase; it does not leave the room microphone open to Whisper. With
 `--debug-latency`, a one-second rolling wake-score peak is also printed while
 idle so microphone/model problems are visible before a trigger.
@@ -139,7 +146,7 @@ The explicit integration check performs one small local inference:
 
 ### Local hearing setup (Windows)
 
-Run the explicit installer yourself; Jarvis startup never downloads Whisper:
+Run the explicit installer yourself; BMO startup never downloads Whisper:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/setup_whisper_windows.ps1
@@ -224,7 +231,7 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_tts_windows.ps1
 Use `-Providers kokoro` or `-Providers piper` to set up one provider. The script
 installs only into `.venv`, verifies every downloaded model/config with a pinned
 SHA-256, refuses to replace a hash-mismatched local asset unless `-Force` is
-explicit, and never modifies global `PATH`. Normal Jarvis startup does not
+explicit, and never modifies global `PATH`. Normal BMO startup does not
 install or download anything.
 
 Generate labeled listening samples and timing summaries without Ollama,
@@ -346,7 +353,8 @@ TTS receives only final response or fixed local acknowledgement text in the CLI
 coordinator. It
 cannot call tools, mutate the simulator, refresh safety heartbeats, clear an
 e-stop, or bypass robot policy. Wake-word barge-in only cancels TTS playback.
-After STT, an anchored local grammar recognizes only explicit STOP utterances;
+After STT, an anchored local grammar recognizes only explicit STOP utterances
+(including BMO and legacy Jarvis address forms);
 it sends the existing semantic STOP intent through `SafeRobotController` and
 `SafetySupervisor` without asking Qwen. Every other valid transcript uses the
 normal `ConversationService` and structured-tool path. No SafetySupervisor
@@ -365,7 +373,7 @@ disable independent of the desktop, Wi-Fi, speech stack, and LLM.
 Microphone recordings use unique names beneath ignored `data/recordings/`.
 They are deleted after successful or failed transcription unless
 `retain_recordings` is explicitly set to `true`. Temporary Whisper output is
-also deleted. Jarvis does not log raw audio or invoke a cloud speech service.
+also deleted. BMO does not log raw audio or invoke a cloud speech service.
 Normal synthesized response audio stays in memory and is discarded after
 playback. Idle wake/VAD frames and wake buffers are never written. Only a VAD-
 accepted utterance becomes a unique temporary WAV for process-per-command
@@ -391,6 +399,6 @@ specific and are not the Windows Phase 1 setup path.
 
 Existing faces, sounds, and `wakeword.onnx` are retained unchanged. Phase 2D
 uses the original BMO face/image assets as a private, read-only prototype face;
-they are not the final Jarvis design and must not be redistributed until their
+they are not a final physical BMO design and must not be redistributed until their
 individual provenance/licensing is resolved. See [docs/face.md](docs/face.md)
 and [NOTICE.md](NOTICE.md).

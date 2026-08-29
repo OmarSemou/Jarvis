@@ -79,7 +79,7 @@ def test_voice_command_uses_long_keep_alive_and_prints_concise_local_status(
     assert created["debug"] is True
     assert created["controller"] is fake_controller
     assert created["ran"] and created["closed"]
-    assert "Jarvis Voice" in output
+    assert "BMO Voice" in output
     assert any("Hey Jarvis" in line for line in output)
     assert "Voice: kokoro / am_fenrir" in output
     assert "Barge-in: wakeword" in output

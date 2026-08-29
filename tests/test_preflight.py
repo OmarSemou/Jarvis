@@ -102,7 +102,7 @@ def test_report_is_understandable_and_labels_future_items(tmp_path):
     )
 
     rendered = format_report(report)
-    assert "Jarvis Phase 2C3.2 preflight (read-only)" in rendered
+    assert "BMO Phase 2C3.2 preflight (read-only)" in rendered
     assert "future/optional" in rendered
     assert "Required checks: PASS" in rendered
 
