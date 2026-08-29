@@ -8,8 +8,12 @@ conversation through Ollama. Phase 2B adds native structured tool calling and
 a deterministic safe robot simulator. Phase 2C1.1 adds configurable microphone
 capture, local speech recognition, and comparative STT benchmarking. Phase
 2C2 adds provider-neutral local speech synthesis, speaker playback, and a
-retained listening benchmark. The upstream `agent.py` remains the compatibility
-launcher. Wake word, streaming/interruption, camera capture, memory
+retained listening benchmark. Phase 2C3 adds local wake/VAD inference,
+deterministic voice states, bounded utterances, warmup, latency metrics, and
+cancellable playback. Phase 2C3.1 makes barge-in wake-word-gated by default,
+rejects blank STT turns, adds deterministic safety-routed local STOP, and
+restores general conversational scope. The upstream `agent.py` remains the compatibility
+launcher. Streaming STT/TTS, full echo cancellation, camera capture, memory
 storage, physical hardware, and Tkinter orchestration remain outside the new
 path until later phases.
 
@@ -102,8 +106,10 @@ TranscriptionResult.text
 ```
 
 `ConversationService` has no audio or whisper.cpp dependency. Typed input and
-voice input therefore cannot diverge in tool authority, safety policy, or
-history behavior.
+ordinary voice input therefore cannot diverge in tool authority, safety policy,
+or history behavior. Phase 2C3.1 adds one deliberate exception before the
+service: exact local STOP bypasses conversation history and the LLM but still
+uses `SafeRobotController` and the same `SafetySupervisor`.
 
 The recorder requests mono PCM16 directly. It first tries the configured input
 rate, then 16 kHz, then the selected device's default rate. When direct 16 kHz
@@ -178,6 +184,112 @@ tts-benchmark
 The benchmark makes no LLM or STT calls. A guarded explicit cleanup removes
 one direct benchmark run, never the benchmark root or an arbitrary path.
 
+## Phase 2C3.1a lossless wake-barge handoff
+
+```text
+SoundDeviceRealtimeInput (fixed 30 ms, 16 kHz PCM16 frames)
+  -> OpenWakeWord adapter (Hey Jarvis, local ONNX)
+  -> VoiceStateMachine: IDLE -> WAKE_DETECTED -> LISTENING
+  -> SileroVAD adapter returns probability only
+  -> VADSegmenter applies deterministic start/end/max/no-speech policy
+  -> VoiceInputService creates one private temporary WAV
+  -> existing WhisperCppSTT process-per-command adapter
+  -> exact blank/no-speech and wake-only transcript filter
+  -> LocalVoiceCommandRouter
+       -> STOP -> injected integration -> SafeRobotController/SafetySupervisor/simulator
+       -> otherwise -> ConversationService.respond(transcript)
+                    -> existing LLM/tool/policy/SafetySupervisor/simulator flow
+  -> TTSService normalizes display Markdown and synthesizes Kokoro am_fenrir
+  -> AudioPlaybackService background handle
+  -> VoiceStateMachine: PROCESSING -> SPEAKING -> IDLE
+```
+
+Wake, VAD, realtime input, and state contracts are Jarvis-owned. OpenWakeWord,
+Silero, sounddevice, and Ollama objects cannot cross their respective adapters.
+Imports remain side-effect free; models and devices load only when the explicit
+`voice` command starts. Preflight checks packages, paths, configuration, and
+device metadata but opens no stream and runs no model inference.
+
+The state set is `IDLE`, `WAKE_DETECTED`, `LISTENING`, `PROCESSING`, `SPEAKING`,
+`INTERRUPTED`, `ERROR`, and `SHUTDOWN`. Transition edges are allowlisted and
+tested. An error transitions through `ERROR` to safe `IDLE`; command shutdown
+then reaches `SHUTDOWN`. After each successful response, continuation behavior
+A returns to `IDLE` and requires the wake phrase again.
+
+While `SPEAKING`, the default `wakeword` barge mode invokes the same local wake
+provider against a strictly bounded 320 ms rolling buffer. Generic speech
+probability cannot cancel playback. A confirmed wake phrase signals only the
+TTS playback handle and hands the still-open microphone to VAD without a
+drain, close, reopen, or playback-cancellation wait:
+
+```text
+SPEAKING -> wake event + playback cancel signal -> INTERRUPTED -> LISTENING
+  -> buffered tail + same live stream -> VAD endpointing
+  -> STT -> blank/wake-only filter -> local STOP or ConversationService
+```
+
+The newest buffered tail is deliberately shorter than the VAD speech-start
+minimum, so it can preserve an immediate command onset but cannot authorize a
+capture without at least one newly consumed live frame. The remaining frames
+are passive pre-roll. A separate 1.5-second command-start timeout supports a
+short natural pause after the wake phrase and returns silent attempts to
+`IDLE`. Realtime frames carry monotonic capture timestamps and sequence values;
+debug mode reports the first handoff gap without logging audio.
+
+The coordinator still has no import or reference to robot tools, controllers,
+robot state, SafetySupervisor, or e-stop reset authority. It receives a narrow
+`LocalVoiceCommandExecutor` protocol through composition. The integration
+adapter maps only `LocalVoiceCommand.STOP` to the existing high-level
+`RobotIntent(STOP)` and `SafeRobotController`; all safety/controller contracts
+remain authoritative. The router exposes no movement, e-stop reset, sensor,
+heartbeat, or low-level controls. Every non-STOP transcript follows the normal
+LLM/tool path.
+
+The old higher-threshold VAD speech-start interruption remains only behind
+explicit `vad_experimental` configuration. Normal playback drains queued
+self-speech and resets wake/VAD state before `IDLE`. The wake-gated default is
+self-barge-in mitigation, not acoustic echo cancellation. “Hey Jarvis, stop”
+is the supported interruption; plain “Stop” over loud playback is not claimed
+reliable.
+
+Wake and rejected VAD audio exist only in bounded memory queues. The handoff
+buffer is cleared after its snapshot and cannot become the next command. Only an
+accepted utterance is written as a temporary WAV because whisper.cpp remains a
+process-per-command file adapter; the file is removed by default. Warmup runs
+local wake/VAD silence and optionally one discarded, unplayed TTS synthesis.
+Ollama uses a voice-session keep-alive but is never automatically started and
+no model is pulled.
+
+Normal idle activation also retains the segmenter's bounded pre-roll and sends
+its newest sub-threshold tail through VAD before newly read frames. This makes
+`IDLE -> WAKE_DETECTED -> LISTENING` continuous in the same way as the speaking
+handoff, without retaining room audio beyond the current wake attempt.
+
+Display and speech text intentionally diverge only after conversation is
+complete:
+
+```text
+LLMResponse.text (original Markdown)
+  -> terminal + ConversationService history unchanged
+  -> TTSService.prepare_text_for_speech
+  -> Kokoro or Piper receives plain speakable text
+```
+
+The formatter is deterministic text transformation only. It has no rendering,
+network, URL, filesystem, code-execution, model, or tool authority.
+
+`VoiceLatencyTracker` records monotonic event timestamps and derives
+wake-to-speech start, utterance duration, endpoint delay, STT, LLM/tools, TTS,
+playback-start, speech-end-to-audio-start, wake-to-playback-cancel, and
+STT-to-local-stop values. Normal mode is quiet; `--debug-latency` prints actual
+per-interaction metrics and labeled wake-barge/local-stop/no-speech events.
+
+`LLMRequest` carries provider-neutral temperature with a validated default of
+`0.2`; the Ollama adapter maps it to native options. Thinking remains off by
+default. Immutable prompt policy explicitly preserves ordinary general-
+knowledge conversation and directs uncertainty acknowledgment. Robot tools are
+additional action mechanisms, never a restriction on conversational subjects.
+
 ## Long-term authority path
 
 ```text
@@ -223,8 +335,17 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.audio.tts.kokoro`: lazy local `kokoro-onnx` CPU adapter.
 - `jarvis.audio.tts.piper`: lazy local OHF Piper CPU adapter.
 - `jarvis.audio.tts.playback`: lazy output discovery and synchronous PCM16 playback.
+- `jarvis.audio.tts.text`: deterministic Markdown-to-speech text normalization.
 - `jarvis.audio.tts.service`: session selection and synthesize-then-play coordination.
 - `jarvis.audio.tts.benchmark`: fixed-corpus local synthesis and guarded sample cleanup.
+- `jarvis.audio.realtime`: bounded continuous local PCM frames with no persistence.
+- `jarvis.audio.wake`: provider-neutral wake contract and lazy OpenWakeWord adapter.
+- `jarvis.audio.vad`: provider-neutral Silero scoring and deterministic endpoint policy.
+- `jarvis.audio.voice.state`: explicit voice state transition graph.
+- `jarvis.audio.voice.latency`: structured per-turn timing and aggregation.
+- `jarvis.audio.voice.commands`: exact no-speech filtering and STOP-only grammar.
+- `jarvis.audio.voice.coordinator`: authority-free wake-to-response orchestration.
+- `jarvis.integrations.voice_stop`: narrow STOP-to-safe-controller composition adapter.
 - `jarvis.core.conversation`: provider-independent in-memory turn orchestration.
 - `jarvis.llm.base`: provider-neutral messages, responses, cancellation, and errors.
 - `jarvis.llm.ollama`: explicit loopback-only Ollama transport adapter.
@@ -240,7 +361,7 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.robot.controller`: safety-gated semantic simulator controller.
 - `jarvis.robot.simulator`: deterministic in-memory robot state and event log.
 
-Future modules will add wake word, VAD, streaming/early TTS, interruption, memory, face,
-vision, integrations, physical robot components, and ESP32 transport. None of
-those integrations is part of Phase 2C2. Microphone/STT/TTS testing and the robot
+Future modules may add streaming/early STT/TTS, real AEC, memory, face, vision,
+external integrations, physical robot components, and ESP32 transport. None of those
+features is part of Phase 2C3.1. Microphone/STT/TTS testing and the robot
 simulator are not hardware safety validation.

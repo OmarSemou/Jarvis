@@ -3,9 +3,9 @@
 Jarvis is becoming a fully local, API-free personal companion robot. The
 repository now includes the **Phase 1 architecture and safety foundation**,
 **Phase 2A local text conversation**, **Phase 2B structured robot tools with a
-deterministic simulator**, and **Phase 2C local push-to-talk hearing and local
-speech output** for Windows 11. Jarvis does not listen continuously or control
-a physical robot.
+deterministic simulator**, and **Phase 2C3.1 corrected local voice interaction**
+for Windows 11. Continuous listening is an explicitly enabled local wake-word
+mode; Jarvis does not control a physical robot.
 
 The project is derived from
 [Be More Agent](https://github.com/brenpoly/be-more-agent), an MIT-licensed
@@ -40,20 +40,34 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
 - Explicit developer push-to-talk recording to mono PCM16 16 kHz WAV.
 - Provider-neutral local speech-to-text through a configured `whisper.cpp`
   process using an allowlisted multilingual Whisper `base` or `small` model.
-- Voice transcripts routed into the same conversation, structured-tool, safety,
-  and simulator path as typed text.
+- Non-STOP voice transcripts routed into the same conversation, structured-
+  tool, safety, and simulator path as typed text; explicit voice STOP uses the
+  narrower deterministic controller path.
 - Private recording deletion by default plus LLM-free `stt-check` and bilingual
   `stt-benchmark` commands.
 - Provider-neutral, fully local English TTS through pinned CPU builds of
   `kokoro-onnx` or Open Home Foundation Piper.
-- Synchronous in-memory PCM16 playback through a session-selectable Windows
-  speaker, with text-only fallback on every expected failure.
+- In-memory PCM16 playback through a session-selectable Windows speaker,
+  including a cancellable voice-mode handle and text-only failure fallback.
 - An LLM-free, STT-free, playback-free `tts-benchmark` command covering four
   Kokoro and two Piper voice candidates.
+- A deterministic continuous voice coordinator with explicit wake, listening,
+  processing, speaking, interruption, error, and shutdown states.
+- Local OpenWakeWord activation, ONNX-only Silero VAD endpointing, controlled
+  Kokoro `am_fenrir` preload, cancellable playback, and structured latency data.
+- Wake-word-gated playback interruption by default, with the former generic
+  VAD interruption available only as `vad_experimental`.
+- Deterministic blank-audio rejection and a one-command local STOP router that
+  bypasses Qwen while retaining the controller and safety boundary.
+- TTS-only Markdown normalization: terminal output and conversation history
+  retain formatting while Kokoro/Piper receive plain speakable text.
+- Lossless bounded pre-roll for both normal wake activation and wake-gated
+  playback interruption, with score and frame-continuity diagnostics.
+- A conservative, configurable Ollama conversation temperature of `0.2`.
 
-The existing `agent.py` remains a compatibility launcher. Phase 2C2 does not
+The existing `agent.py` remains a compatibility launcher. Phase 2C3.1 does not
 reuse its legacy last-stdout-line Whisper parsing or GUI audio thread. Wake
-word, Piper, camera, memory, and GUI implementations there have not been
+word, camera, memory, and GUI implementations there have not been
 modularized. The new chat/hearing path does not use the legacy `BotGUI` class.
 
 ## Development environment
@@ -88,6 +102,21 @@ The CLI supports `/status`, `/reset`, `/think on`, `/think off`,
 Robot actions print concise developer events such as `[ROBOT] gesture=wave`.
 The `/robot estop-reset` command is trusted local CLI control and is not in the
 LLM tool registry.
+
+After running the explicit voice setup and enabling voice mode in private
+configuration, start local hands-free interaction with:
+
+```powershell
+.\.venv\Scripts\python.exe -m jarvis voice
+.\.venv\Scripts\python.exe -m jarvis voice --debug-latency
+```
+
+The active classifier is the pinned official OpenWakeWord **Hey Jarvis** model
+downloaded into ignored local runtime storage. Saying only “Jarvis” can have a
+higher miss rate. After each response Jarvis returns to requiring the wake
+phrase; it does not leave the room microphone open to Whisper. With
+`--debug-latency`, a one-second rolling wake-score peak is also printed while
+idle so microphone/model problems are visible before a trigger.
 The explicit integration check performs one small local inference:
 
 ```powershell
@@ -120,8 +149,21 @@ List or inspect microphone inputs with `/mic list` and `/mic status`. A
 session-only selection can be made with `/mic use <index or unique name>`. Use
 `/talk`, speak, and press Enter to stop. The transcript then enters the exact
 same `ConversationService` used by typed input. This is a developer-mode
-push-to-talk workflow—not a wake word, VAD, global hotkey, or always-listening
+push-to-talk workflow and remains available independently of continuous voice
 mode.
+
+Install the minimal continuous-voice dependency and hash-verified ONNX feature
+models explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_voice_windows.ps1
+```
+
+The script installs pinned `openwakeword==0.6.0` in `.venv` and downloads the
+pinned official Hey Jarvis classifier plus the mel, embedding, and Silero VAD
+ONNX assets beneath ignored `data/`. It does not install PyTorch. Normal
+startup does not install or download anything. The tracked legacy
+`wakeword.onnx` remains untouched and is not used by continuous voice mode.
 
 Test microphone capture and transcription without Ollama or an LLM:
 
@@ -185,10 +227,13 @@ human can compare voice quality. Remove exactly one run later with:
 .\.venv\Scripts\python.exe -m jarvis tts-benchmark-clean "<run-directory>"
 ```
 
-Speech is disabled by default while the voice comparison is pending. In chat,
+Speech remains disabled in tracked example configuration. In private voice-mode
+configuration the selected default is Kokoro `am_fenrir`. In chat,
 use `/voice on` to enable the configured provider/voice for the session. Both
 typed and `/talk` responses are spoken only after the complete text response is
-visible. Audio is synthesized to memory, played synchronously, and not retained.
+visible. Continuous mode uses cancellable background playback and requires the
+local **Hey Jarvis** wake detector—not generic VAD alone—to authorize barge-in
+by default. Synthesized audio remains in memory and is not retained.
 See [docs/audio.md](docs/audio.md) for provider and latency details.
 
 ## Configuration
@@ -204,7 +249,8 @@ Supported fields are:
 - `camera_rotation`
 - `system_prompt`, `system_prompt_extras`
 - `input_device`, `input_sample_rate`
-- `llm_model`, `llm_thinking`, `conversation_max_turns`
+- `llm_model`, `llm_thinking`, `llm_temperature` (default `0.2`)
+- `conversation_max_turns`
 - `conversation_max_tool_rounds` (default `3`)
 - `ollama_host`, `ollama_connect_timeout_seconds`
 - `ollama_read_timeout_seconds`, `ollama_keep_alive`
@@ -213,10 +259,19 @@ Supported fields are:
 - `stt_timeout_seconds`, `stt_use_gpu` (default `false` in Phase 2C1.1)
 - `retain_recordings` (default `false`)
 - `output_device` (default `null`, meaning the system default output)
-- `tts_enabled` (default `false` while voice selection is pending)
+- `tts_enabled` (tracked default `false`; continuous mode requires it enabled)
 - `tts_provider` (`kokoro` or `piper`)
-- `tts_voice` (must belong to the selected curated provider allowlist)
-- `tts_speed` (`0.5` through `2.0`), `tts_language` (`en` in Phase 2C2)
+- `tts_voice` (Kokoro `am_fenrir` is the selected English default)
+- `tts_speed` (`0.5` through `2.0`), `tts_language` (`en` in Phase 2C3)
+- `voice_mode_enabled`, `wakeword_enabled`, `wakeword_threshold`
+- `vad_enabled`, `vad_speech_threshold`, `vad_trailing_silence_ms`
+- `vad_max_utterance_seconds`, `vad_min_speech_ms`, `vad_listen_timeout_seconds`
+- `barge_in_enabled`, `barge_in_mode` (`wakeword` by default or explicitly
+  experimental `vad_experimental`), `barge_in_threshold`, `barge_in_suppression_ms`
+- `barge_in_min_speech_ms`, `barge_in_pre_roll_ms` (default `320`)
+- `barge_in_command_start_timeout_seconds` (default `1.5`), `tts_preload`,
+  `voice_debug_latency`
+- `voice_ollama_keep_alive` (default `30m` for an active voice session)
 
 Unknown keys and legacy aliases are handled deliberately by
 `jarvis.core.config`. Runtime data is written beneath ignored `data/`, not into
@@ -266,9 +321,19 @@ not hardware safety validation and says nothing about real braking distance,
 electrical faults, motor drivers, sensor coverage, watchdogs, or emergency-stop
 circuits.
 
-TTS receives only the final assistant response text in the CLI coordinator. It
+TTS receives only final response or fixed local acknowledgement text in the CLI
+coordinator. It
 cannot call tools, mutate the simulator, refresh safety heartbeats, clear an
-e-stop, or bypass robot policy. No SafetySupervisor behavior changed in 2C2.
+e-stop, or bypass robot policy. Wake-word barge-in only cancels TTS playback.
+After STT, an anchored local grammar recognizes only explicit STOP utterances;
+it sends the existing semantic STOP intent through `SafeRobotController` and
+`SafetySupervisor` without asking Qwen. Every other valid transcript uses the
+normal `ConversationService` and structured-tool path. No SafetySupervisor
+behavior changed in Phase 2C3.1.
+
+Voice stop is not the physical emergency stop. A future robot still requires
+an ESP32 watchdog, local motor-command timeout, and a physical e-stop/power
+disable independent of the desktop, Wi-Fi, speech stack, and LLM.
 
 ## Privacy and local execution
 
@@ -277,17 +342,20 @@ They are deleted after successful or failed transcription unless
 `retain_recordings` is explicitly set to `true`. Temporary Whisper output is
 also deleted. Jarvis does not log raw audio or invoke a cloud speech service.
 Normal synthesized response audio stays in memory and is discarded after
-synchronous playback. Only an explicit `tts-benchmark` retains generated WAVs,
+playback. Idle wake/VAD frames and wake buffers are never written. Only a VAD-
+accepted utterance becomes a unique temporary WAV for process-per-command
+Whisper, and the existing `retain_recordings=false` cleanup remains the default.
+Only an explicit `tts-benchmark` retains generated WAVs,
 under ignored runtime storage, until an explicit cleanup command. The Phase
-2C2 speech stack is CPU-only; `stt_use_gpu` remains false. Vulkan and
+2C3 speech stack is CPU/ONNX-only; `stt_use_gpu` remains false. Vulkan and
 other acceleration backends remain deferred until a later,
 explicit acceleration decision.
 
 ## Not implemented yet
 
-Wake word, VAD, barge-in/interruption, streaming synthesis, face GUI,
-camera/vision, web search, persistent memory, ESP32 communication, motors,
-servos, and physical movement are not part of Phase 2C2. Raspberry Pi
+Full acoustic echo cancellation, streaming STT/TTS, face GUI, camera/vision,
+web search, persistent memory, ESP32 communication, motors, servos, and
+physical movement are not part of Phase 2C3.1. Raspberry Pi
 deployment comes after desktop and simulator validation.
 
 ## Legacy files

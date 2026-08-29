@@ -49,7 +49,7 @@ class Playback:
 def _service(*, playback=None, failure=None):
     return TTSService(
         {
-            "kokoro": Provider("kokoro", ("am_michael",), failure=failure),
+            "kokoro": Provider("kokoro", ("am_fenrir",), failure=failure),
             "piper": Provider("piper", ("en_US-joe-medium",)),
         },
         playback or Playback(),
@@ -67,6 +67,18 @@ def test_service_synthesizes_then_plays_and_supports_session_switches():
     assert service.voice == "en_US-joe-medium"
     service.set_voice("en_US-joe-medium")
     assert service.status().ready
+
+
+def test_service_preserves_display_text_but_sends_speech_safe_text_to_provider():
+    service = _service()
+    display_text = "Use the **Power Stroke**."
+
+    result = service.speak(display_text)
+
+    assert result.success
+    assert display_text == "Use the **Power Stroke**."
+    assert service.providers["kokoro"].calls[0][0] == "Use the Power Stroke."
+    assert "*" not in service.providers["kokoro"].calls[0][0]
 
 
 def test_disabled_service_never_synthesizes_or_plays():
@@ -116,3 +128,27 @@ def test_service_rejects_unknown_provider_and_cross_provider_voice():
             pass
         else:
             raise AssertionError("invalid TTS selection was accepted")
+
+
+def test_warmup_synthesizes_once_without_playback_and_normal_speech_still_plays():
+    service = _service()
+
+    assert service.warmup() is None
+    assert service.warmup() is None
+    assert len(service.providers["kokoro"].calls) == 1
+    assert service.playback.audio == []
+
+    result = service.speak("Ready.")
+    assert result.success
+    assert len(service.providers["kokoro"].calls) == 2
+    assert len(service.playback.audio) == 1
+
+
+def test_failed_warmup_is_cached_and_never_plays_audio():
+    failure = SynthesisFailure(SynthesisErrorCode.MODEL_LOAD_FAILED, "cold failure")
+    service = _service(failure=failure)
+
+    assert service.warmup().message == "cold failure"
+    assert service.warmup().message == "cold failure"
+    assert len(service.providers["kokoro"].calls) == 1
+    assert service.playback.audio == []

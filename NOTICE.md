@@ -19,9 +19,11 @@ vision, LLM, or hardware stack. Existing upstream assets are intentionally
 preserved while their terms are reviewed.
 
 - **openWakeWord** code is Apache-2.0. Its included pre-trained wake-word
-  models are documented by that project as CC BY-NC-SA 4.0. The tracked
-  `wakeword.onnx` is retained from upstream and must not be assumed to be
-  covered by this repository's MIT license.
+  models are documented by that project as CC BY-NC-SA 4.0. Phase 2C3
+  downloads the official classifier into ignored runtime storage for private
+  development; it is not covered by this repository's MIT license. The
+  tracked legacy `wakeword.onnx` is retained from upstream but is not used by
+  continuous voice mode and has unresolved provenance.
   Source: https://github.com/dscripka/openWakeWord#license
 - **Piper** engine code and individual Piper voice models/datasets have their
   own terms. The configured `en_GB-semaine-medium` voice is not tracked here;
@@ -83,3 +85,34 @@ redistribution terms are not established here. Piper model cards document
 dataset provenance, but downstream distribution implications still require
 review. Generated benchmark WAVs are local evaluation artifacts, not assets
 approved for redistribution.
+
+## Phase 2C3 wake word and VAD
+
+Continuous voice mode downloads the official OpenWakeWord v0.5.1
+`hey_jarvis_v0.1.onnx` classifier to ignored local runtime storage and verifies
+SHA-256
+`94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb`.
+
+The tracked legacy `wakeword.onnx` first appeared in the upstream history. The
+upstream `setup.sh` identifies its former download name as
+`hey_jarvis_v0.1.onnx`; that historical moving raw URL is no longer available,
+so the repository cannot verify the checked-in bytes against a current
+official release asset. Its recorded SHA-256 is
+`2b359120c5facbc7cfe58e87812cb7c303b697f3360cb99d3cd6f9a5e1dd64b9`.
+It remains untouched for legacy compatibility and is not used by continuous
+voice mode. The runtime calls the recognized phrase **Hey Jarvis**, not a
+generic or newly trained “Jarvis” model.
+
+The explicit setup script installs OpenWakeWord code version 0.6.0 and
+downloads the classifier, mel-spectrogram, embedding, and Silero VAD ONNX
+assets from the official OpenWakeWord v0.5.1 release into ignored `data/`
+storage. All four downloads are SHA-256 pinned. OpenWakeWord code is
+Apache-2.0; its project
+documents included pretrained wake-word models as CC BY-NC-SA 4.0. Silero VAD
+code/model notices identify MIT licensing. Model and code terms remain
+distinct, and downstream redistribution requires an explicit review.
+
+- OpenWakeWord: https://github.com/dscripka/openWakeWord
+- Hey Jarvis model documentation:
+  https://github.com/dscripka/openWakeWord/blob/main/docs/models/hey_jarvis.md
+- Silero VAD: https://github.com/snakers4/silero-vad

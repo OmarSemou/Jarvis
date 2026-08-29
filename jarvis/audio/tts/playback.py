@@ -6,6 +6,8 @@ import importlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from threading import Event, Lock, Thread
+from time import perf_counter
 from typing import Any
 
 from .base import SynthesizedAudio
@@ -15,6 +17,7 @@ class PlaybackErrorCode(StrEnum):
     BACKEND_UNAVAILABLE = "backend_unavailable"
     DEVICE_MISSING = "device_missing"
     PLAYBACK_FAILED = "playback_failed"
+    INTERRUPTED = "interrupted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +31,56 @@ class PlaybackResult:
     success: bool
     device: str | None = None
     error: PlaybackFailure | None = None
+
+
+class PlaybackHandle:
+    """Observable handle for one background playback operation."""
+
+    def __init__(self, service: "AudioPlaybackService") -> None:
+        self._service = service
+        self._started = Event()
+        self._done = Event()
+        self._cancelled = Event()
+        self._result: PlaybackResult | None = None
+        self._started_at: float | None = None
+        self._finished_at: float | None = None
+
+    @property
+    def started(self) -> bool:
+        return self._started.is_set()
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    @property
+    def started_at(self) -> float | None:
+        return self._started_at
+
+    @property
+    def finished_at(self) -> float | None:
+        return self._finished_at
+
+    def wait_started(self, timeout_seconds: float | None = None) -> bool:
+        return self._started.wait(timeout_seconds)
+
+    def wait(self, timeout_seconds: float | None = None) -> PlaybackResult | None:
+        return self._result if self._done.wait(timeout_seconds) else None
+
+    def stop(self) -> None:
+        self._cancelled.set()
+        self._service.stop()
+
+    cancel = stop
+
+    def _mark_started(self) -> None:
+        self._started_at = perf_counter()
+        self._started.set()
+
+    def _finish(self, result: PlaybackResult) -> None:
+        self._result = result
+        self._finished_at = perf_counter()
+        self._done.set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,11 +138,7 @@ def _default_output_index(module: Any) -> int | None:
 
 
 class AudioPlaybackService:
-    """Select an output and synchronously play in-memory PCM16 audio.
-
-    ``stop`` is deliberately public and idempotent so a future conversational
-    coordinator can add interruption without changing the provider contracts.
-    """
+    """Synchronously play PCM16 or expose a cancellable background handle."""
 
     def __init__(
         self,
@@ -100,6 +149,9 @@ class AudioPlaybackService:
         self.configured_device = configured_device
         self._module_loader = module_loader
         self._stream: Any | None = None
+        self._stream_lock = Lock()
+        self._stop_requested = Event()
+        self._active_handle: PlaybackHandle | None = None
 
     def backend(self) -> Any:
         return self._module_loader()
@@ -176,13 +228,25 @@ class AudioPlaybackService:
         )
         return SpeakerStatus(True, selected, self.configured_device, selection)
 
-    def play(self, audio: SynthesizedAudio) -> PlaybackResult:
+    def play(
+        self,
+        audio: SynthesizedAudio,
+        *,
+        _handle: PlaybackHandle | None = None,
+    ) -> PlaybackResult:
+        self._stop_requested.clear()
         try:
+            if _handle is not None and _handle._cancelled.is_set():
+                return self._interrupted_result()
             device = self.selected_output()
             if device.max_output_channels < audio.channels:
                 raise SpeakerUnavailableError(
                     f"Speaker '{device.name}' does not support {audio.channels} channels."
                 )
+            if self._stop_requested.is_set() or (
+                _handle is not None and _handle._cancelled.is_set()
+            ):
+                return self._interrupted_result(device.name)
             module = self.backend()
             stream = module.RawOutputStream(
                 samplerate=audio.sample_rate,
@@ -190,10 +254,29 @@ class AudioPlaybackService:
                 dtype="int16",
                 device=device.index,
             )
-            self._stream = stream
+            with self._stream_lock:
+                self._stream = stream
+            if self._stop_requested.is_set() or (
+                _handle is not None and _handle._cancelled.is_set()
+            ):
+                return self._interrupted_result(device.name)
             stream.start()
-            stream.write(audio.pcm16)
+            if _handle is not None:
+                _handle._mark_started()
+            frame_bytes = 2 * audio.channels
+            chunk_bytes = max(
+                frame_bytes,
+                round(audio.sample_rate * 0.02) * frame_bytes,
+            )
+            for offset in range(0, len(audio.pcm16), chunk_bytes):
+                if self._stop_requested.is_set() or (
+                    _handle is not None and _handle._cancelled.is_set()
+                ):
+                    return self._interrupted_result(device.name)
+                stream.write(audio.pcm16[offset : offset + chunk_bytes])
             stream.stop()
+            if self._stop_requested.is_set():
+                return self._interrupted_result(device.name)
             return PlaybackResult(True, device.name)
         except SpeakerBackendUnavailableError as exc:
             return PlaybackResult(
@@ -206,6 +289,8 @@ class AudioPlaybackService:
                 error=PlaybackFailure(PlaybackErrorCode.DEVICE_MISSING, str(exc)),
             )
         except Exception as exc:
+            if self._stop_requested.is_set():
+                return self._interrupted_result()
             return PlaybackResult(
                 False,
                 error=PlaybackFailure(
@@ -214,16 +299,50 @@ class AudioPlaybackService:
                 ),
             )
         finally:
-            stream = self._stream
-            self._stream = None
+            with self._stream_lock:
+                stream = self._stream
+                self._stream = None
             if stream is not None:
                 try:
                     stream.close()
                 except Exception:
                     pass
 
+    @staticmethod
+    def _interrupted_result(device: str | None = None) -> PlaybackResult:
+        return PlaybackResult(
+            False,
+            device,
+            PlaybackFailure(
+                PlaybackErrorCode.INTERRUPTED,
+                "Local speech playback was interrupted.",
+            ),
+        )
+
+    def start(self, audio: SynthesizedAudio) -> PlaybackHandle:
+        """Play in a background thread so the coordinator can monitor the mic."""
+
+        with self._stream_lock:
+            if self._active_handle is not None and not self._active_handle.done:
+                raise SpeakerError("Another speech playback operation is already active.")
+            handle = PlaybackHandle(self)
+            self._active_handle = handle
+
+        def worker() -> None:
+            try:
+                handle._finish(self.play(audio, _handle=handle))
+            finally:
+                with self._stream_lock:
+                    if self._active_handle is handle:
+                        self._active_handle = None
+
+        Thread(target=worker, name="jarvis-tts-playback", daemon=True).start()
+        return handle
+
     def stop(self) -> None:
-        stream = self._stream
+        self._stop_requested.set()
+        with self._stream_lock:
+            stream = self._stream
         if stream is None:
             return
         try:

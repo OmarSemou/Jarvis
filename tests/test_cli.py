@@ -1,6 +1,9 @@
 from jarvis.cli import run_chat
+from jarvis.audio.tts.base import SpeechSynthesisResult, SynthesizedAudio
+from jarvis.audio.tts.playback import PlaybackResult
+from jarvis.audio.tts.service import TTSService
 from jarvis.core.conversation import ConversationService, ConversationSettings
-from jarvis.llm.base import LLMResponse, ModelUnavailableError
+from jarvis.llm.base import LLMResponse, MessageRole, ModelUnavailableError
 from jarvis.robot.controller import create_simulated_controller
 from jarvis.tools.policy import RobotToolPolicy
 from jarvis.tools.registry import RobotToolRegistry
@@ -164,3 +167,64 @@ def test_cli_prints_concise_robot_event_before_natural_response():
     assert "[ROBOT] gesture=wave" in output
     assert "Jarvis > Hey." in output
     assert output.index("[ROBOT] gesture=wave") < output.index("Jarvis > Hey.")
+
+
+def test_markdown_display_and_history_remain_exact_while_tts_gets_plain_speech():
+    display_text = "Use the **Power Stroke**."
+
+    class MarkdownProvider(CLIProvider):
+        def generate(self, request, *, cancellation=None):
+            self.requests.append(request)
+            return LLMResponse(display_text, request.model)
+
+    class SpeechProvider:
+        name = "kokoro"
+        available_voices = ("am_fenrir",)
+
+        def __init__(self):
+            self.texts = []
+
+        def readiness_error(self, _voice):
+            return None
+
+        def synthesize(self, text, *, voice, speed, language):
+            self.texts.append(text)
+            return SpeechSynthesisResult(
+                True,
+                self.name,
+                voice,
+                0.01,
+                SynthesizedAudio(b"\x00\x00" * 100, 10_000),
+            )
+
+    class PiperProvider(SpeechProvider):
+        name = "piper"
+        available_voices = ("en_US-joe-medium",)
+
+    class Playback:
+        def play(self, _audio):
+            return PlaybackResult(True, "mock")
+
+        def stop(self):
+            pass
+
+    speech_provider = SpeechProvider()
+    tts = TTSService(
+        {"kokoro": speech_provider, "piper": PiperProvider()},
+        Playback(),
+        enabled=True,
+    )
+    service = service_for(MarkdownProvider())
+    output = []
+
+    assert run_chat(
+        service,
+        tts_runtime=tts,
+        input_fn=input_sequence(["Explain the cycle", "/quit"]),
+        output_fn=output.append,
+    ) == 0
+
+    assert f"Jarvis > {display_text}" in output
+    assert service.history[-1].role is MessageRole.ASSISTANT
+    assert service.history[-1].content == display_text
+    assert speech_provider.texts == ["Use the Power Stroke."]

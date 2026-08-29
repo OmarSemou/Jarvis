@@ -47,6 +47,21 @@ Simulation verifies software control flow only. It does not validate physical
 stopping behavior, electrical isolation, motor drivers, sensor placement,
 watchdogs, communication loss, or emergency-stop circuitry.
 
+## Phase 2C3.1 local voice stop
+
+An exact anchored voice grammar recognizes STOP after local Whisper
+transcription and before the LLM. It cannot request general movement or mutate
+safety state. The narrow integration translates only STOP to the existing
+high-level `RobotIntent(STOP)`, then calls `SafeRobotController`; the safety
+supervisor remains authoritative and the simulator is never called directly.
+The route cannot clear a latched e-stop, and Qwen is not involved in deciding
+whether STOP should execute.
+
+This voice command is an additional convenience/safety route, not a physical
+emergency stop. Speech recognition, the desktop process, or audio hardware may
+fail. The future ESP32 watchdog, local motor-command timeout, and physical
+e-stop/power-disable path remain mandatory.
+
 ## Future physical implementation
 
 The host safety supervisor is only one layer. The ESP32 must independently

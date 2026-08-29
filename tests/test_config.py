@@ -119,6 +119,7 @@ def test_phase2a_model_and_thinking_defaults():
 
     assert config.llm_model == "qwen3:8b"
     assert config.llm_thinking is False
+    assert config.llm_temperature == 0.2
     assert config.ollama_host == "http://127.0.0.1:11434"
     assert config.conversation_max_turns == 12
     assert config.conversation_max_tool_rounds == 3
@@ -128,8 +129,76 @@ def test_phase2a_model_and_thinking_defaults():
     assert config.stt_model == "base"
     assert config.tts_enabled is False
     assert config.tts_provider == "kokoro"
-    assert config.tts_voice == "am_michael"
+    assert config.tts_voice == "am_fenrir"
     assert config.tts_speed == 1.0
+    assert config.voice_mode_enabled is False
+    assert config.wakeword_enabled is True
+    assert config.vad_enabled is True
+    assert config.barge_in_enabled is True
+    assert config.barge_in_mode == "wakeword"
+    assert config.barge_in_pre_roll_ms == 320
+    assert config.barge_in_command_start_timeout_seconds == 1.5
+    assert config.voice_ollama_keep_alive == "30m"
+
+
+def test_phase2c3_voice_configuration_is_parsed():
+    result = parse_config(
+        {
+            "voice_mode_enabled": True,
+            "wakeword_enabled": False,
+            "wakeword_threshold": 0.61,
+            "vad_speech_threshold": 0.55,
+            "vad_trailing_silence_ms": 700,
+            "vad_max_utterance_seconds": 15,
+            "vad_min_speech_ms": 300,
+            "vad_listen_timeout_seconds": 6,
+            "barge_in_enabled": False,
+            "barge_in_mode": "VAD_EXPERIMENTAL",
+            "barge_in_threshold": 0.8,
+            "barge_in_suppression_ms": 600,
+            "barge_in_min_speech_ms": 300,
+            "barge_in_pre_roll_ms": 400,
+            "barge_in_command_start_timeout_seconds": 2.0,
+            "tts_preload": False,
+            "voice_debug_latency": True,
+            "voice_ollama_keep_alive": "45m",
+        }
+    )
+
+    assert result.config.voice_mode_enabled
+    assert not result.config.wakeword_enabled
+    assert result.config.wakeword_threshold == 0.61
+    assert result.config.vad_trailing_silence_ms == 700
+    assert result.config.vad_max_utterance_seconds == 15.0
+    assert not result.config.barge_in_enabled
+    assert result.config.barge_in_mode == "vad_experimental"
+    assert result.config.barge_in_pre_roll_ms == 400
+    assert result.config.barge_in_command_start_timeout_seconds == 2.0
+    assert result.config.voice_debug_latency
+    assert result.config.voice_ollama_keep_alive == "45m"
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ({"voice_mode_enabled": 1}, "must be a boolean"),
+        ({"wakeword_threshold": 1.0}, "from 0.05 to 0.99"),
+        ({"vad_speech_threshold": 0.0}, "from 0.05 to 0.99"),
+        ({"vad_trailing_silence_ms": 100}, "integer from 300 to 2000"),
+        ({"vad_max_utterance_seconds": 2}, "number from 3 to 60"),
+        ({"barge_in_suppression_ms": -1}, "integer from 0 to 3000"),
+        ({"barge_in_pre_roll_ms": 800}, "integer from 200 to 500"),
+        (
+            {"barge_in_command_start_timeout_seconds": 0.1},
+            "number from 0.5 to 3",
+        ),
+        ({"barge_in_mode": "speech"}, "wakeword, vad_experimental"),
+        ({"voice_ollama_keep_alive": ""}, "non-empty string"),
+    ],
+)
+def test_invalid_phase2c3_configuration_is_rejected(raw, message):
+    with pytest.raises(ConfigValidationError, match=message):
+        parse_config(raw)
 
 
 def test_phase2a_configuration_is_parsed():
@@ -137,6 +206,7 @@ def test_phase2a_configuration_is_parsed():
         {
             "llm_model": "qwen3:14b",
             "llm_thinking": True,
+            "llm_temperature": 0.25,
             "conversation_max_turns": 4,
             "conversation_max_tool_rounds": 2,
             "ollama_host": "http://localhost:11434",
@@ -148,6 +218,7 @@ def test_phase2a_configuration_is_parsed():
 
     assert result.config.llm_model == "qwen3:14b"
     assert result.config.llm_thinking is True
+    assert result.config.llm_temperature == 0.25
     assert result.config.conversation_max_turns == 4
     assert result.config.conversation_max_tool_rounds == 2
     assert result.config.ollama_connect_timeout_seconds == 2.0
@@ -215,6 +286,7 @@ def test_invalid_phase2c2_configuration_is_rejected(raw, message):
     ("raw", "message"),
     [
         ({"llm_thinking": 1}, "'llm_thinking' must be a boolean"),
+        ({"llm_temperature": 2.1}, "number from 0 to 2"),
         ({"conversation_max_turns": 0}, "'conversation_max_turns' must be an integer"),
         ({"conversation_max_tool_rounds": 0}, "'conversation_max_tool_rounds' must be an integer"),
         ({"ollama_connect_timeout_seconds": True}, "must be a number"),

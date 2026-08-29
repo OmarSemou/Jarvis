@@ -26,6 +26,11 @@ def test_paths_do_not_depend_on_current_working_directory(tmp_path, monkeypatch)
     assert paths.kokoro_voices.name == "voices-v1.0.bin"
     assert paths.piper_voice_files("en_US-joe-medium")[1].name == "en_US-joe-medium.onnx.json"
     assert paths.tts_benchmark_dir == root.resolve() / "data" / "benchmarks" / "tts"
+    assert paths.wakeword_classifier_model.name == "hey_jarvis_v0.1.onnx"
+    assert paths.wakeword_classifier_model.parent == paths.wakeword_models_dir
+    assert paths.wakeword_melspectrogram_model.name == "melspectrogram.onnx"
+    assert paths.wakeword_embedding_model.name == "embedding_model.onnx"
+    assert paths.vad_model.name == "silero_vad.onnx"
 
 
 def test_repository_root_must_be_explicitly_absolute():

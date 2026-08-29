@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from threading import Event
 
 from jarvis.audio.tts.base import SynthesizedAudio
 from jarvis.audio.tts.playback import (
@@ -133,3 +134,73 @@ def test_ambiguous_or_missing_configured_speaker_fails_closed():
     )
     assert not AudioPlaybackService("USB", module_loader=lambda: module).status().available
     assert not AudioPlaybackService(99, module_loader=lambda: module).status().available
+
+
+def test_background_playback_can_be_interrupted_and_reports_structured_result():
+    release = Event()
+
+    class BlockingStream(Stream):
+        def write(self, data):
+            self.events.append(("write", data))
+            release.wait(2)
+
+        def abort(self):
+            self.events.append("abort")
+            release.set()
+
+    class BlockingModule(Module):
+        def RawOutputStream(self, **settings):
+            stream = BlockingStream(**settings)
+            self.streams.append(stream)
+            return stream
+
+    module = BlockingModule()
+    playback = AudioPlaybackService(module_loader=lambda: module)
+    handle = playback.start(SynthesizedAudio(b"\x00\x00" * 2_000, 24_000))
+
+    assert handle.wait_started(1)
+    assert not handle.done
+    handle.cancel()
+    result = handle.wait(2)
+
+    assert result is not None and not result.success
+    assert result.error.code is PlaybackErrorCode.INTERRUPTED
+    assert handle.finished_at is not None
+    assert "abort" in module.streams[0].events
+
+
+def test_background_playback_cancel_before_stream_start_never_plays_audio():
+    entered = Event()
+    release = Event()
+
+    class SlowModule(Module):
+        def query_devices(self):
+            entered.set()
+            release.wait(2)
+            return self.devices
+
+    module = SlowModule()
+    playback = AudioPlaybackService(module_loader=lambda: module)
+    handle = playback.start(SynthesizedAudio(b"\x00\x00" * 2_000, 24_000))
+    assert entered.wait(1)
+
+    handle.cancel()
+    release.set()
+    result = handle.wait(2)
+
+    assert result is not None and result.error.code is PlaybackErrorCode.INTERRUPTED
+    assert module.streams == []
+
+
+def test_background_playback_is_chunked_for_bounded_cancel_latency():
+    module = Module()
+    playback = AudioPlaybackService(module_loader=lambda: module)
+    audio = SynthesizedAudio(b"\x00\x00" * 2_000, 10_000)
+
+    result = playback.play(audio)
+
+    writes = [event[1] for event in module.streams[0].events if isinstance(event, tuple)]
+    assert result.success
+    assert len(writes) == 10
+    assert all(len(chunk) <= 400 for chunk in writes)
+    assert b"".join(writes) == audio.pcm16

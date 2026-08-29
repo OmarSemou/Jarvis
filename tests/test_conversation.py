@@ -126,6 +126,26 @@ def test_thinking_can_be_toggled_per_runtime():
     assert provider.requests[0].thinking is True
 
 
+def test_conservative_temperature_is_provider_neutral_and_reported_in_status():
+    provider = FakeProvider(["answer"])
+    service = ConversationService(
+        provider,
+        ConversationSettings(model="qwen3:8b", temperature=0.3),
+        system_prompt=build_system_prompt(),
+    )
+
+    service.respond("Question")
+
+    assert provider.requests[0].temperature == 0.3
+    assert service.status().temperature == 0.3
+
+
+@pytest.mark.parametrize("temperature", (-0.1, 2.1, float("nan"), True))
+def test_invalid_conversation_temperature_is_rejected(temperature):
+    with pytest.raises(ValueError, match="temperature"):
+        ConversationSettings(temperature=temperature)
+
+
 def test_close_delegates_to_provider():
     provider = FakeProvider()
     service = make_service(provider)

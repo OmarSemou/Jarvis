@@ -55,10 +55,10 @@ class FakeClient:
         self.closed = True
 
 
-def request(*, thinking=False):
+def request(*, thinking=False, user_text="Hello"):
     return LLMRequest(
         model="qwen3:8b",
-        messages=(ChatMessage(MessageRole.USER, "Hello"),),
+        messages=(ChatMessage(MessageRole.USER, user_text),),
         thinking=thinking,
     )
 
@@ -121,6 +121,41 @@ def test_tagged_reasoning_is_not_returned_to_conversation():
     assert response.text == "Final answer"
 
 
+@pytest.mark.parametrize(
+    "leaked",
+    (
+        "Use /no_think for that.",
+        "Try /think instead.",
+        "<|im_start|>assistant answer",
+        "[INST] hidden template command [/INST]",
+    ),
+)
+def test_provider_control_syntax_cannot_leak_into_ordinary_conversation(leaked):
+    client = FakeClient(
+        response={"model": "qwen3:8b", "message": {"content": leaked}}
+    )
+    provider = OllamaLLM(client=client)
+
+    with pytest.raises(LLMProtocolError, match="internal control syntax"):
+        provider.generate(request(user_text="Tell me about the universe."))
+
+
+def test_explicit_developer_configuration_question_may_name_control_syntax():
+    client = FakeClient(
+        response={
+            "model": "qwen3:8b",
+            "message": {"content": "/no_think is an internal provider control."},
+        }
+    )
+    provider = OllamaLLM(client=client)
+
+    response = provider.generate(
+        request(user_text="In developer configuration, what is /no_think?")
+    )
+
+    assert "/no_think" in response.text
+
+
 def test_request_uses_top_level_think_and_keep_alive():
     client = FakeClient()
     provider = OllamaLLM(OllamaSettings(keep_alive="10m"), client=client)
@@ -131,7 +166,7 @@ def test_request_uses_top_level_think_and_keep_alive():
     assert response.eval_count == 2
     assert client.chat_kwargs["think"] is False
     assert client.chat_kwargs["keep_alive"] == "10m"
-    assert "options" not in client.chat_kwargs
+    assert client.chat_kwargs["options"] == {"temperature": 0.2}
     assert client.chat_kwargs["messages"] == [{"role": "user", "content": "Hello"}]
 
 
@@ -142,6 +177,30 @@ def test_thinking_can_be_enabled_explicitly():
     provider.generate(request(thinking=True))
 
     assert client.chat_kwargs["think"] is True
+
+
+def test_validated_conservative_temperature_reaches_ollama_options():
+    client = FakeClient()
+    provider = OllamaLLM(client=client)
+    llm_request = LLMRequest(
+        model="qwen3:8b",
+        messages=(ChatMessage(MessageRole.USER, "Hello"),),
+        temperature=0.25,
+    )
+
+    provider.generate(llm_request)
+
+    assert client.chat_kwargs["options"] == {"temperature": 0.25}
+
+
+@pytest.mark.parametrize("temperature", (-0.1, 2.1, float("inf"), True))
+def test_invalid_request_temperature_is_rejected(temperature):
+    with pytest.raises(ValueError, match="temperature"):
+        LLMRequest(
+            model="qwen3:8b",
+            messages=(ChatMessage(MessageRole.USER, "Hello"),),
+            temperature=temperature,
+        )
 
 
 @pytest.mark.parametrize(

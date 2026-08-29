@@ -102,7 +102,7 @@ def test_report_is_understandable_and_labels_future_items(tmp_path):
     )
 
     rendered = format_report(report)
-    assert "Jarvis Phase 2C2 preflight (read-only)" in rendered
+    assert "Jarvis Phase 2C3.1 preflight (read-only)" in rendered
     assert "future/optional" in rendered
     assert "Required checks: PASS" in rendered
 
@@ -158,6 +158,52 @@ def test_preflight_reports_configured_whisper_model_and_microphone_without_openi
     assert _by_name(report, "Microphone").status is CheckStatus.AVAILABLE
     assert _by_name(report, "Speaker").status is CheckStatus.AVAILABLE
     assert "no sound played" in _by_name(report, "Speaker").detail
+
+
+def test_preflight_reports_voice_assets_without_loading_models_or_opening_mic(tmp_path):
+    paths = _repository(tmp_path)
+    for path in (
+        paths.wakeword_classifier_model,
+        paths.wakeword_melspectrogram_model,
+        paths.wakeword_embedding_model,
+        paths.vad_model,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"asset")
+    paths.kokoro_model.parent.mkdir(parents=True, exist_ok=True)
+    paths.kokoro_model.write_bytes(b"model")
+    paths.kokoro_voices.write_bytes(b"voices")
+    whisper = paths.whisper_executable_candidates[0]
+    whisper.parent.mkdir(parents=True, exist_ok=True)
+    whisper.write_bytes(b"exe")
+    paths.whisper_model_for("base").parent.mkdir(parents=True, exist_ok=True)
+    paths.whisper_model_for("base").write_bytes(b"model")
+
+    def microphone_probe(configured):
+        return MicrophoneStatus(
+            True, AudioDevice(1, "Mic", 1, 48_000, True), configured, "default"
+        )
+
+    def speaker_probe(configured):
+        return SpeakerStatus(
+            True, OutputDevice(2, "Speaker", 2, 48_000, True), configured, "default"
+        )
+
+    report = run_preflight(
+        paths,
+        which=lambda name: "C:/Ollama/ollama.exe" if name == "ollama.exe" else None,
+        module_available=lambda name: name in {"openwakeword", "sounddevice", "kokoro_onnx"},
+        version_info=(3, 13, 15),
+        config=JarvisConfig(voice_mode_enabled=True, tts_enabled=True),
+        microphone_probe=microphone_probe,
+        speaker_probe=speaker_probe,
+    )
+
+    assert _by_name(report, "OpenWakeWord").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "Wake-word model").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "VAD model").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "Voice mode").status is CheckStatus.AVAILABLE
+    assert _by_name(report, "Microphone").status is CheckStatus.AVAILABLE
 
 
 def test_preflight_reports_tts_packages_assets_and_selected_voice_without_synthesis(tmp_path):

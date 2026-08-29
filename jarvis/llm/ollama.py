@@ -178,14 +178,42 @@ def _tool_call_from_ollama(value: Any) -> ToolCall:
 
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+_PROVIDER_CONTROL_SYNTAX = re.compile(
+    r"(?:/(?:no[_-]?think|think)\b|<\|[^|\n]+\|>|\[/?INST\]|</?s>)",
+    flags=re.IGNORECASE,
+)
 
 
-def _visible_answer(text: str) -> str:
+def _control_configuration_requested(messages: tuple[ChatMessage, ...]) -> bool:
+    user_messages = [message.content for message in messages if message.role.value == "user"]
+    if not user_messages:
+        return False
+    latest = user_messages[-1].casefold()
+    return any(
+        phrase in latest
+        for phrase in (
+            "developer configuration",
+            "provider control",
+            "control token",
+            "thinking mode",
+            "/think",
+            "/no_think",
+            "ollama thinking",
+            "qwen thinking",
+        )
+    )
+
+
+def _visible_answer(text: str, *, allow_provider_controls: bool = False) -> str:
     """Discard tagged reasoning if an older Ollama/model combination emits it."""
 
     answer = _THINK_BLOCK.sub("", text).strip()
     if not answer or re.search(r"</?think>", answer, flags=re.IGNORECASE):
         raise LLMProtocolError("Ollama returned reasoning without a usable final answer.")
+    if not allow_provider_controls and _PROVIDER_CONTROL_SYNTAX.search(answer):
+        raise LLMProtocolError(
+            "Ollama returned internal control syntax instead of a usable final answer."
+        )
     return answer
 
 
@@ -277,6 +305,7 @@ class OllamaLLM:
             "stream": False,
             "think": request.thinking,
             "keep_alive": self._settings.keep_alive,
+            "options": {"temperature": request.temperature},
         }
         if request.tools:
             request_options["tools"] = [_tool_definition_to_ollama(tool) for tool in request.tools]
@@ -308,7 +337,12 @@ class OllamaLLM:
         tool_calls = tuple(_tool_call_from_ollama(call) for call in raw_tool_calls)
         visible_text = ""
         if isinstance(text, str) and text.strip():
-            visible_text = _visible_answer(text)
+            visible_text = _visible_answer(
+                text,
+                allow_provider_controls=_control_configuration_requested(
+                    request.messages
+                ),
+            )
         elif text is not None and not isinstance(text, str):
             raise LLMProtocolError("Ollama returned malformed assistant text.")
         if not visible_text and not tool_calls:

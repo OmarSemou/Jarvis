@@ -24,6 +24,7 @@ from jarvis.audio.devices import (
     format_microphone_status,
 )
 from jarvis.audio.recorder import PushToTalkRecorder, RecordingError
+from jarvis.audio.realtime import SoundDeviceRealtimeInput
 from jarvis.audio.service import VoiceInputError, VoiceInputService
 from jarvis.audio.stt.base import TranscriptionResult
 from jarvis.audio.stt.whisper_cpp import (
@@ -46,6 +47,14 @@ from jarvis.audio.tts.playback import (
     format_speaker_status,
 )
 from jarvis.audio.tts.service import TTSService
+from jarvis.audio.vad.segmenter import VADSegmenter, VADSegmenterSettings
+from jarvis.audio.vad.silero import SileroVAD, SileroVADSettings
+from jarvis.audio.voice.coordinator import (
+    BargeInMode,
+    VoiceModeCoordinator,
+    VoiceModeSettings,
+)
+from jarvis.audio.wake.openwakeword import OpenWakeWord, OpenWakeWordSettings, WAKE_PHRASE
 from jarvis.core.config import ConfigValidationError, JarvisConfig, load_for_paths
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.core.paths import JarvisPaths
@@ -60,6 +69,7 @@ from jarvis.llm.ollama import OllamaLLM, OllamaSettings
 from jarvis.personality.prompt import build_system_prompt
 from jarvis.robot.controller import SafeRobotController, create_simulated_controller
 from jarvis.robot.safety import SafetyAuthority
+from jarvis.integrations.voice_stop import SafeLocalVoiceCommandExecutor
 from jarvis.tools.policy import RobotToolPolicy
 from jarvis.tools.registry import RobotToolRegistry
 from jarvis.tools.types import ToolExecutor
@@ -150,13 +160,17 @@ def create_robot_runtime(*, output_fn: OutputFunction | None = None) -> RobotRun
     return RobotRuntime(controller, RobotToolPolicy(RobotToolRegistry(), controller))
 
 
-def create_ollama_provider(config: JarvisConfig) -> OllamaLLM:
+def create_ollama_provider(
+    config: JarvisConfig,
+    *,
+    keep_alive: str | None = None,
+) -> OllamaLLM:
     return OllamaLLM(
         OllamaSettings(
             host=config.ollama_host,
             connect_timeout_seconds=config.ollama_connect_timeout_seconds,
             read_timeout_seconds=config.ollama_read_timeout_seconds,
-            keep_alive=config.ollama_keep_alive,
+            keep_alive=keep_alive or config.ollama_keep_alive,
         )
     )
 
@@ -165,20 +179,86 @@ def create_conversation(
     config: JarvisConfig,
     *,
     tool_executor: ToolExecutor | None = None,
+    keep_alive: str | None = None,
 ) -> ConversationService:
     return ConversationService(
-        create_ollama_provider(config),
+        create_ollama_provider(config, keep_alive=keep_alive),
         ConversationSettings(
             model=config.llm_model,
             max_turns=config.conversation_max_turns,
             thinking=config.llm_thinking,
             max_tool_rounds=config.conversation_max_tool_rounds,
+            temperature=config.llm_temperature,
         ),
         system_prompt=build_system_prompt(
             configured_prompt=config.system_prompt,
             configured_extras=config.system_prompt_extras,
         ),
         tool_executor=tool_executor,
+    )
+
+
+def create_voice_mode_coordinator(
+    config: JarvisConfig,
+    paths: JarvisPaths,
+    conversation: ConversationService,
+    voice_input: VoiceInputService,
+    tts: TTSService,
+    *,
+    robot_controller: SafeRobotController | None = None,
+    output_fn: OutputFunction = print,
+    debug_latency: bool = False,
+) -> VoiceModeCoordinator:
+    source = SoundDeviceRealtimeInput(
+        voice_input.devices,
+        preferred_sample_rate=config.input_sample_rate,
+    )
+    wakeword = OpenWakeWord(
+        OpenWakeWordSettings(
+            paths.wakeword_classifier_model.resolve(),
+            paths.wakeword_melspectrogram_model.resolve(),
+            paths.wakeword_embedding_model.resolve(),
+            config.wakeword_threshold,
+        )
+    )
+    vad = SileroVAD(SileroVADSettings(paths.vad_model.resolve()))
+    segmenter = VADSegmenter(
+        vad,
+        VADSegmenterSettings(
+            threshold=config.vad_speech_threshold,
+            trailing_silence_ms=config.vad_trailing_silence_ms,
+            max_utterance_seconds=config.vad_max_utterance_seconds,
+            min_speech_ms=config.vad_min_speech_ms,
+            listen_timeout_seconds=config.vad_listen_timeout_seconds,
+        ),
+    )
+    return VoiceModeCoordinator(
+        source,
+        wakeword,
+        vad,
+        segmenter,
+        voice_input,
+        conversation,
+        tts,
+        local_command_executor=(
+            SafeLocalVoiceCommandExecutor(robot_controller)
+            if robot_controller is not None
+            else None
+        ),
+        settings=VoiceModeSettings(
+            preload_tts=config.tts_preload,
+            barge_in_enabled=config.barge_in_enabled,
+            barge_in_mode=BargeInMode(config.barge_in_mode),
+            barge_in_threshold=config.barge_in_threshold,
+            barge_in_suppression_ms=config.barge_in_suppression_ms,
+            barge_in_min_speech_ms=config.barge_in_min_speech_ms,
+            barge_in_pre_roll_ms=config.barge_in_pre_roll_ms,
+            barge_in_command_start_timeout_seconds=(
+                config.barge_in_command_start_timeout_seconds
+            ),
+            debug_latency=debug_latency or config.voice_debug_latency,
+        ),
+        output_fn=output_fn,
     )
 
 
@@ -189,6 +269,7 @@ def _format_status(service: ConversationService) -> str:
         f"Endpoint: {status.endpoint}\n"
         f"Model: {status.model}\n"
         f"Thinking: {'on' if status.thinking else 'off'}\n"
+        f"Temperature: {status.temperature:g}\n"
         f"History: {status.history_turns}/{status.max_turns} turns\n"
         f"Robot tools: {'enabled' if status.tools_enabled else 'disabled'}\n"
         f"Tool round limit: {status.max_tool_rounds}"
@@ -593,6 +674,71 @@ def chat_command(output_fn: OutputFunction = print) -> int:
         service.close()
 
 
+def voice_command(
+    *,
+    debug_latency: bool = False,
+    output_fn: OutputFunction = print,
+) -> int:
+    """Run local continuous wake/VAD/conversation/speech mode."""
+
+    service: ConversationService | None = None
+    try:
+        paths = JarvisPaths.discover()
+        config = load_for_paths(paths).config
+        if not config.voice_mode_enabled:
+            output_fn(
+                "Continuous voice mode is disabled. Set voice_mode_enabled to true "
+                "in private data/config.json; /talk remains available."
+            )
+            return 2
+        if not config.wakeword_enabled:
+            output_fn("Voice mode unavailable: wake-word detection is disabled.")
+            return 2
+        if not config.vad_enabled:
+            output_fn("Voice mode unavailable: VAD is disabled.")
+            return 2
+        if not config.tts_enabled:
+            output_fn("Voice mode unavailable: local TTS is disabled.")
+            return 2
+
+        robot = create_robot_runtime(output_fn=output_fn)
+        voice_input = create_voice_runtime(config, paths)
+        tts = create_tts_runtime(config, paths)
+        service = create_conversation(
+            config,
+            tool_executor=robot.tools,
+            keep_alive=config.voice_ollama_keep_alive,
+        )
+        coordinator = create_voice_mode_coordinator(
+            config,
+            paths,
+            service,
+            voice_input,
+            tts,
+            robot_controller=robot.controller,
+            output_fn=output_fn,
+            debug_latency=debug_latency,
+        )
+        output_fn("Jarvis Voice")
+        output_fn(
+            f"Wake word: {WAKE_PHRASE} "
+            "(the model is trained for the full phrase)"
+        )
+        output_fn(f"STT: whisper.cpp / {config.stt_model}")
+        output_fn(f"LLM: {config.llm_model}")
+        output_fn(f"Voice: {tts.provider} / {tts.voice}")
+        barge_status = config.barge_in_mode if config.barge_in_enabled else "disabled"
+        output_fn(f"Barge-in: {barge_status}")
+        output_fn("Preparing local voice models...")
+        return coordinator.run()
+    except (ConfigValidationError, ValueError) as exc:
+        output_fn(f"Configuration error: {exc}")
+        return 2
+    finally:
+        if service is not None:
+            service.close()
+
+
 def llm_check_command(output_fn: OutputFunction = print) -> int:
     """Perform an explicit local model check; never download or pull anything."""
 
@@ -614,6 +760,7 @@ def llm_check_command(output_fn: OutputFunction = print) -> int:
                 ChatMessage(MessageRole.USER, "Reply with exactly: Jarvis local check OK"),
             ),
             thinking=False,
+            temperature=config.llm_temperature,
         )
         started = perf_counter()
         response = provider.generate(request)
@@ -814,6 +961,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m jarvis", description="Jarvis local developer commands")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("chat", help="start the local text conversation CLI")
+    voice_parser = subparsers.add_parser(
+        "voice", help="start continuous local wake/VAD conversational voice mode"
+    )
+    voice_parser.add_argument(
+        "--debug-latency",
+        action="store_true",
+        help="print structured timing for each completed voice interaction",
+    )
     subparsers.add_parser("llm-check", help="explicitly test the configured local Ollama model")
     stt_parser = subparsers.add_parser(
         "stt-check", help="record and transcribe once without an LLM call"
@@ -854,6 +1009,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "chat":
         return chat_command()
+    if args.command == "voice":
+        return voice_command(debug_latency=args.debug_latency)
     if args.command == "llm-check":
         return llm_check_command()
     if args.command == "stt-check":

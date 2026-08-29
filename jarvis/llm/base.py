@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from threading import Event
@@ -56,12 +57,21 @@ class LLMRequest:
     messages: tuple[ChatMessage, ...]
     thinking: bool = False
     tools: tuple[ToolDefinition, ...] = ()
+    temperature: float = 0.2
 
     def __post_init__(self) -> None:
         if not isinstance(self.model, str) or not self.model.strip():
             raise ValueError("model must be a non-empty string")
         if not isinstance(self.thinking, bool):
             raise TypeError("thinking must be a boolean")
+        if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(self.temperature)
+            or not 0 <= self.temperature <= 2
+        ):
+            raise ValueError("temperature must be a finite number from 0 to 2")
+        object.__setattr__(self, "temperature", float(self.temperature))
         if not self.messages:
             raise ValueError("at least one message is required")
         object.__setattr__(self, "tools", tuple(self.tools))

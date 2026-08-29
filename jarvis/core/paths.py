@@ -117,6 +117,28 @@ class JarvisPaths:
         return self.data_dir / "benchmarks" / "tts"
 
     @property
+    def wakeword_models_dir(self) -> Path:
+        return self.local_models_dir / "wakeword"
+
+    @property
+    def wakeword_classifier_model(self) -> Path:
+        """Return the pinned OpenWakeWord primary Hey Jarvis classifier."""
+
+        return self.wakeword_models_dir / "hey_jarvis_v0.1.onnx"
+
+    @property
+    def wakeword_melspectrogram_model(self) -> Path:
+        return self.wakeword_models_dir / "melspectrogram.onnx"
+
+    @property
+    def wakeword_embedding_model(self) -> Path:
+        return self.wakeword_models_dir / "embedding_model.onnx"
+
+    @property
+    def vad_model(self) -> Path:
+        return self.wakeword_models_dir / "silero_vad.onnx"
+
+    @property
     def camera_image_file(self) -> Path:
         return self.data_dir / "current_image.jpg"
 
@@ -130,6 +152,8 @@ class JarvisPaths:
 
     @property
     def wakeword_model(self) -> Path:
+        """Return the legacy upstream classifier retained for compatibility."""
+
         return self.repository_root / "wakeword.onnx"
 
     @property

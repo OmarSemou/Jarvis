@@ -59,7 +59,25 @@ def test_tts_setup_is_pinned_hash_verified_and_avoids_disallowed_frameworks():
     assert "Get-FileHash -Algorithm SHA256" in script
     assert "SetEnvironmentVariable" not in script
     combined = (script + requirements).casefold()
-    for forbidden in ("torch", "transformers", "langchain", "langgraph", "opencv", "openwakeword"):
+    assert '"torch' not in combined
+    for forbidden in ("transformers", "langchain", "langgraph", "opencv"):
+        assert forbidden not in combined
+
+
+def test_voice_setup_is_pinned_hash_verified_and_onnx_only():
+    script = (ROOT / "scripts" / "setup_voice_windows.ps1").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "openwakeword==0.6.0" in script
+    assert "openwakeword==0.6.0" in requirements
+    assert "releases/download/v0.5.1" in script
+    assert "hey_jarvis_v0.1.onnx" in script
+    assert "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb" in script
+    assert script.count("Install-VerifiedAsset") >= 5
+    assert "wakeword.onnx" not in script
+    assert script.count("Get-FileHash -Algorithm SHA256") >= 2
+    combined = (script + requirements).casefold()
+    assert '"torch' not in combined
+    for forbidden in ("transformers", "langchain", "langgraph", "opencv", "ros"):
         assert forbidden not in combined
 
 
@@ -74,3 +92,39 @@ def test_benchmark_module_has_no_llm_network_or_download_dependency():
 
     forbidden = ("jarvis.llm", "ollama", "httpx", "requests", "urllib", "socket")
     assert not any(name.startswith(forbidden) for name in imports)
+
+
+def test_voice_coordinator_has_no_direct_robot_or_safety_authority():
+    tree = ast.parse(
+        (ROOT / "jarvis" / "audio" / "voice" / "coordinator.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module)
+
+    assert not any(name.startswith("jarvis.robot") for name in imports)
+    assert not any(name.startswith("jarvis.tools") for name in imports)
+    source = (ROOT / "jarvis" / "audio" / "voice" / "coordinator.py").read_text(
+        encoding="utf-8"
+    )
+    assert "reset_emergency_stop" not in source
+    assert "clear_estop" not in source
+
+
+def test_local_voice_stop_integration_is_narrow_and_never_calls_simulator_directly():
+    source = (
+        ROOT / "jarvis" / "integrations" / "voice_stop.py"
+    ).read_text(encoding="utf-8")
+    normalized = source.casefold()
+
+    assert "saferobotcontroller" in normalized
+    assert "execute_intent" in normalized
+    assert "robotaction.stop" in normalized
+    assert "simulatedrobot" not in normalized
+    assert "reset_emergency_stop" not in normalized
+    assert "latch_emergency_stop" not in normalized

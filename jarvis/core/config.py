@@ -52,6 +52,7 @@ KNOWN_KEYS = frozenset(
         "input_sample_rate",
         "llm_model",
         "llm_thinking",
+        "llm_temperature",
         "conversation_max_turns",
         "conversation_max_tool_rounds",
         "ollama_host",
@@ -70,6 +71,25 @@ KNOWN_KEYS = frozenset(
         "tts_voice",
         "tts_speed",
         "tts_language",
+        "voice_mode_enabled",
+        "wakeword_enabled",
+        "wakeword_threshold",
+        "vad_enabled",
+        "vad_speech_threshold",
+        "vad_trailing_silence_ms",
+        "vad_max_utterance_seconds",
+        "vad_min_speech_ms",
+        "vad_listen_timeout_seconds",
+        "barge_in_enabled",
+        "barge_in_mode",
+        "barge_in_threshold",
+        "barge_in_suppression_ms",
+        "barge_in_min_speech_ms",
+        "barge_in_pre_roll_ms",
+        "barge_in_command_start_timeout_seconds",
+        "tts_preload",
+        "voice_debug_latency",
+        "voice_ollama_keep_alive",
     }
 )
 
@@ -94,6 +114,7 @@ class JarvisConfig:
     input_sample_rate: int | None = None
     llm_model: str = "qwen3:8b"
     llm_thinking: bool = False
+    llm_temperature: float = 0.2
     conversation_max_turns: int = 12
     conversation_max_tool_rounds: int = 3
     ollama_host: str = "http://127.0.0.1:11434"
@@ -111,9 +132,28 @@ class JarvisConfig:
     output_device: int | str | None = None
     tts_enabled: bool = False
     tts_provider: str = "kokoro"
-    tts_voice: str = "am_michael"
+    tts_voice: str = "am_fenrir"
     tts_speed: float = 1.0
     tts_language: str = "en"
+    voice_mode_enabled: bool = False
+    wakeword_enabled: bool = True
+    wakeword_threshold: float = 0.5
+    vad_enabled: bool = True
+    vad_speech_threshold: float = 0.5
+    vad_trailing_silence_ms: int = 640
+    vad_max_utterance_seconds: float = 18.0
+    vad_min_speech_ms: int = 240
+    vad_listen_timeout_seconds: float = 8.0
+    barge_in_enabled: bool = True
+    barge_in_mode: str = "wakeword"
+    barge_in_threshold: float = 0.75
+    barge_in_suppression_ms: int = 480
+    barge_in_min_speech_ms: int = 240
+    barge_in_pre_roll_ms: int = 320
+    barge_in_command_start_timeout_seconds: float = 1.5
+    tts_preload: bool = True
+    voice_debug_latency: bool = False
+    voice_ollama_keep_alive: str = "30m"
 
     def effective_system_prompt(self, fallback: str) -> str:
         """Return the configured prompt, then append optional extra guidance."""
@@ -137,6 +177,7 @@ class JarvisConfig:
             "input_sample_rate": self.input_sample_rate,
             "llm_model": self.llm_model,
             "llm_thinking": self.llm_thinking,
+            "llm_temperature": self.llm_temperature,
             "conversation_max_turns": self.conversation_max_turns,
             "conversation_max_tool_rounds": self.conversation_max_tool_rounds,
             "ollama_host": self.ollama_host,
@@ -155,6 +196,27 @@ class JarvisConfig:
             "tts_voice": self.tts_voice,
             "tts_speed": self.tts_speed,
             "tts_language": self.tts_language,
+            "voice_mode_enabled": self.voice_mode_enabled,
+            "wakeword_enabled": self.wakeword_enabled,
+            "wakeword_threshold": self.wakeword_threshold,
+            "vad_enabled": self.vad_enabled,
+            "vad_speech_threshold": self.vad_speech_threshold,
+            "vad_trailing_silence_ms": self.vad_trailing_silence_ms,
+            "vad_max_utterance_seconds": self.vad_max_utterance_seconds,
+            "vad_min_speech_ms": self.vad_min_speech_ms,
+            "vad_listen_timeout_seconds": self.vad_listen_timeout_seconds,
+            "barge_in_enabled": self.barge_in_enabled,
+            "barge_in_mode": self.barge_in_mode,
+            "barge_in_threshold": self.barge_in_threshold,
+            "barge_in_suppression_ms": self.barge_in_suppression_ms,
+            "barge_in_min_speech_ms": self.barge_in_min_speech_ms,
+            "barge_in_pre_roll_ms": self.barge_in_pre_roll_ms,
+            "barge_in_command_start_timeout_seconds": (
+                self.barge_in_command_start_timeout_seconds
+            ),
+            "tts_preload": self.tts_preload,
+            "voice_debug_latency": self.voice_debug_latency,
+            "voice_ollama_keep_alive": self.voice_ollama_keep_alive,
         }
 
 
@@ -263,6 +325,10 @@ def parse_config(
     if not isinstance(llm_thinking, bool):
         problems.append("'llm_thinking' must be a boolean")
 
+    llm_temperature = merged["llm_temperature"]
+    if not _is_finite_number(llm_temperature) or not 0 <= llm_temperature <= 2:
+        problems.append("'llm_temperature' must be a number from 0 to 2")
+
     conversation_max_turns = merged["conversation_max_turns"]
     if not _is_int(conversation_max_turns) or not 1 <= conversation_max_turns <= 100:
         problems.append("'conversation_max_turns' must be an integer from 1 to 100")
@@ -334,7 +400,77 @@ def parse_config(
 
     tts_language = _validate_string(merged, "tts_language", problems).casefold()
     if tts_language != "en":
-        problems.append("'tts_language' must be 'en' in Phase 2C2")
+        problems.append("'tts_language' must be 'en' in Phase 2C3")
+
+    voice_mode_enabled = merged["voice_mode_enabled"]
+    wakeword_enabled = merged["wakeword_enabled"]
+    vad_enabled = merged["vad_enabled"]
+    barge_in_enabled = merged["barge_in_enabled"]
+    barge_in_mode = _validate_string(merged, "barge_in_mode", problems).casefold()
+    if barge_in_mode not in {"wakeword", "vad_experimental"}:
+        problems.append(
+            "'barge_in_mode' must be one of: wakeword, vad_experimental"
+        )
+    tts_preload = merged["tts_preload"]
+    voice_debug_latency = merged["voice_debug_latency"]
+    for key, value in (
+        ("voice_mode_enabled", voice_mode_enabled),
+        ("wakeword_enabled", wakeword_enabled),
+        ("vad_enabled", vad_enabled),
+        ("barge_in_enabled", barge_in_enabled),
+        ("tts_preload", tts_preload),
+        ("voice_debug_latency", voice_debug_latency),
+    ):
+        if not isinstance(value, bool):
+            problems.append(f"'{key}' must be a boolean")
+
+    wakeword_threshold = merged["wakeword_threshold"]
+    vad_speech_threshold = merged["vad_speech_threshold"]
+    barge_in_threshold = merged["barge_in_threshold"]
+    for key, value in (
+        ("wakeword_threshold", wakeword_threshold),
+        ("vad_speech_threshold", vad_speech_threshold),
+        ("barge_in_threshold", barge_in_threshold),
+    ):
+        if not _is_finite_number(value) or not 0.05 <= value <= 0.99:
+            problems.append(f"'{key}' must be a number from 0.05 to 0.99")
+
+    vad_trailing_silence_ms = merged["vad_trailing_silence_ms"]
+    vad_min_speech_ms = merged["vad_min_speech_ms"]
+    barge_in_suppression_ms = merged["barge_in_suppression_ms"]
+    barge_in_min_speech_ms = merged["barge_in_min_speech_ms"]
+    barge_in_pre_roll_ms = merged["barge_in_pre_roll_ms"]
+    for key, value, lower, upper in (
+        ("vad_trailing_silence_ms", vad_trailing_silence_ms, 300, 2_000),
+        ("vad_min_speech_ms", vad_min_speech_ms, 60, 2_000),
+        ("barge_in_suppression_ms", barge_in_suppression_ms, 0, 3_000),
+        ("barge_in_min_speech_ms", barge_in_min_speech_ms, 60, 1_000),
+        ("barge_in_pre_roll_ms", barge_in_pre_roll_ms, 200, 500),
+    ):
+        if not _is_int(value) or not lower <= value <= upper:
+            problems.append(f"'{key}' must be an integer from {lower} to {upper}")
+
+    vad_max_utterance_seconds = merged["vad_max_utterance_seconds"]
+    if not _is_finite_number(vad_max_utterance_seconds) or not 3 <= vad_max_utterance_seconds <= 60:
+        problems.append("'vad_max_utterance_seconds' must be a number from 3 to 60")
+    vad_listen_timeout_seconds = merged["vad_listen_timeout_seconds"]
+    if not _is_finite_number(vad_listen_timeout_seconds) or not 1 <= vad_listen_timeout_seconds <= 60:
+        problems.append("'vad_listen_timeout_seconds' must be a number from 1 to 60")
+
+    barge_in_command_start_timeout_seconds = merged[
+        "barge_in_command_start_timeout_seconds"
+    ]
+    if (
+        not _is_finite_number(barge_in_command_start_timeout_seconds)
+        or not 0.5 <= barge_in_command_start_timeout_seconds <= 3.0
+    ):
+        problems.append(
+            "'barge_in_command_start_timeout_seconds' must be a number from 0.5 to 3"
+        )
+
+    voice_ollama_keep_alive = _validate_string(
+        merged, "voice_ollama_keep_alive", problems
+    )
 
     if problems:
         raise ConfigValidationError(source_path, problems)
@@ -351,6 +487,7 @@ def parse_config(
         input_sample_rate=input_sample_rate,
         llm_model=llm_model,
         llm_thinking=llm_thinking,
+        llm_temperature=float(llm_temperature),
         conversation_max_turns=conversation_max_turns,
         conversation_max_tool_rounds=conversation_max_tool_rounds,
         ollama_host=ollama_host,
@@ -369,6 +506,27 @@ def parse_config(
         tts_voice=tts_voice,
         tts_speed=float(tts_speed),
         tts_language=tts_language,
+        voice_mode_enabled=voice_mode_enabled,
+        wakeword_enabled=wakeword_enabled,
+        wakeword_threshold=float(wakeword_threshold),
+        vad_enabled=vad_enabled,
+        vad_speech_threshold=float(vad_speech_threshold),
+        vad_trailing_silence_ms=vad_trailing_silence_ms,
+        vad_max_utterance_seconds=float(vad_max_utterance_seconds),
+        vad_min_speech_ms=vad_min_speech_ms,
+        vad_listen_timeout_seconds=float(vad_listen_timeout_seconds),
+        barge_in_enabled=barge_in_enabled,
+        barge_in_mode=barge_in_mode,
+        barge_in_threshold=float(barge_in_threshold),
+        barge_in_suppression_ms=barge_in_suppression_ms,
+        barge_in_min_speech_ms=barge_in_min_speech_ms,
+        barge_in_pre_roll_ms=barge_in_pre_roll_ms,
+        barge_in_command_start_timeout_seconds=float(
+            barge_in_command_start_timeout_seconds
+        ),
+        tts_preload=tts_preload,
+        voice_debug_latency=voice_debug_latency,
+        voice_ollama_keep_alive=voice_ollama_keep_alive,
     )
     return ConfigLoadResult(config, source_path, tuple(migrations), tuple(unknown))
 

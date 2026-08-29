@@ -28,6 +28,15 @@ import jarvis.audio.tts.kokoro
 import jarvis.audio.tts.piper
 import jarvis.audio.tts.playback
 import jarvis.audio.tts.service
+import jarvis.audio.realtime
+import jarvis.audio.vad.base
+import jarvis.audio.vad.segmenter
+import jarvis.audio.vad.silero
+import jarvis.audio.voice.commands
+import jarvis.audio.voice.coordinator
+import jarvis.audio.wake.base
+import jarvis.audio.wake.openwakeword
+import jarvis.integrations.voice_stop
 '''
 
     result = subprocess.run(

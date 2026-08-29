@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .base import SpeechSynthesisResult, SynthesisErrorCode, SynthesisFailure, TTSProvider
-from .playback import AudioPlaybackService, PlaybackResult
+from .base import (
+    SpeechSynthesisResult,
+    SynthesizedAudio,
+    SynthesisErrorCode,
+    SynthesisFailure,
+    TTSProvider,
+)
+from .playback import AudioPlaybackService, PlaybackHandle, PlaybackResult
+from .text import prepare_text_for_speech
 
 
 DEFAULT_PROVIDER_VOICES = {
-    "kokoro": "am_michael",
+    "kokoro": "am_fenrir",
     "piper": "en_US-joe-medium",
 }
 
@@ -50,7 +57,7 @@ class TTSService:
         *,
         enabled: bool = False,
         provider: str = "kokoro",
-        voice: str = "am_michael",
+        voice: str = "am_fenrir",
         speed: float = 1.0,
         language: str = "en",
     ) -> None:
@@ -63,6 +70,8 @@ class TTSService:
         self.voice = voice
         self.speed = speed
         self.language = language
+        self._warmup_attempted = False
+        self._warmup_failure: SynthesisFailure | None = None
         self._validate_selection(provider, voice)
 
     def _validate_selection(self, provider: str, voice: str) -> None:
@@ -102,16 +111,32 @@ class TTSService:
         self._validate_selection(self.provider, normalized)
         self.voice = normalized
 
-    def speak(self, text: str) -> SpeechOutputResult:
+    def synthesize(self, text: str) -> SpeechSynthesisResult:
         if not self.enabled:
-            return self.disabled_result()
+            return self.disabled_result().synthesis
         provider = self.providers[self.provider]
-        synthesis = provider.synthesize(
-            text,
+        return provider.synthesize(
+            prepare_text_for_speech(text),
             voice=self.voice,
             speed=self.speed,
             language=self.language,
         )
+
+    def warmup(self, text: str = "Hi.") -> SynthesisFailure | None:
+        """Load the selected provider once; synthesized audio is never played."""
+
+        if self._warmup_attempted:
+            return self._warmup_failure
+        self._warmup_attempted = True
+        result = self.synthesize(text)
+        self._warmup_failure = result.error
+        return self._warmup_failure
+
+    def start_playback(self, audio: SynthesizedAudio) -> PlaybackHandle:
+        return self.playback.start(audio)
+
+    def speak(self, text: str) -> SpeechOutputResult:
+        synthesis = self.synthesize(text)
         if not synthesis.success or synthesis.audio is None:
             return SpeechOutputResult(False, synthesis)
         playback = self.playback.play(synthesis.audio)

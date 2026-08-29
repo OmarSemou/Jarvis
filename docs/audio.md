@@ -1,10 +1,12 @@
-# Phase 2C2 local hearing, speech, and benchmarking
+# Phase 2C3 correctness-cleanup local voice interaction
 
-Jarvis currently hears only after an explicit developer command. `/talk`
-starts one microphone recording, Enter stops it, and local `whisper.cpp`
-transcribes it. There is no wake word, VAD, always-listening loop, global
-hotkey or cloud speech service. When explicitly enabled, Jarvis speaks each
-completed response through a fully local provider and the selected speaker.
+Jarvis supports both the preserved `/talk` developer path and an explicitly
+enabled continuous local voice mode. Continuous mode listens for a local
+**Hey Jarvis** wake phrase while idle and while monitoring spoken playback for
+an explicitly gated interruption. It uses deterministic VAD to bound one
+utterance, invokes local `whisper.cpp`, uses either deterministic local STOP or
+the existing conversation/tool path, and speaks through Kokoro `am_fenrir`.
+There is no cloud speech service.
 
 ## Windows setup
 
@@ -125,10 +127,11 @@ ConversationService response text
 ```
 
 `ConversationService` does not import TTS, Kokoro, Piper, or sounddevice. The
-CLI prints the complete response before synthesis begins, then performs one
-synchronous synthesize/play operation. There is no streaming, sentence
-chunking, playback thread, interruption, or barge-in in Phase 2C2. The playback
-interface nevertheless has an idempotent `stop`/`cancel` boundary for later use.
+CLI prints the complete response before synthesis begins. Typed chat and
+`/talk` retain the Phase 2C2 synchronous synthesize/play behavior. Continuous
+voice mode uses the same provider-neutral audio contract with a background
+playback handle so the coordinator can cancel speech during barge-in. There is
+still no streaming synthesis or sentence chunking.
 
 Normal response audio never touches disk. Both adapters return interleaved
 signed little-endian PCM16 plus sample rate and channel count. Kokoro float
@@ -169,7 +172,8 @@ Phase 2C2 uses CPU inference.
 /speaker use <index or unique name>
 ```
 
-The curated Kokoro candidates are `am_fenrir`, `am_michael`, `am_puck`, and
+The selected English Jarvis voice and default is Kokoro `am_fenrir`. The other
+curated Kokoro candidates are `am_michael`, `am_puck`, and
 `bm_george`. Piper candidates are `en_US-joe-medium` and
 `en_US-john-medium`. Provider switching selects a conservative provider-local
 candidate, after which `/voice use` can refine it. These settings are
@@ -202,3 +206,215 @@ the adapter records the first chunk. Neither provider is streamed to speakers
 in this phase. Timings cannot decide voice quality; a human must listen for
 tone, clarity, and pronunciation. Samples are retained deliberately until the
 explicit guarded cleanup command removes one direct benchmark-run directory.
+
+## Continuous voice setup and flow
+
+Run the setup explicitly; application startup never installs packages or
+downloads models:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_voice_windows.ps1
+.\.venv\Scripts\python.exe -m jarvis voice
+```
+
+`scripts/setup_voice_windows.ps1` installs `openwakeword==0.6.0` in the project
+virtual environment. OpenWakeWord's required SciPy/scikit-learn/ONNX Runtime
+dependencies are ordinary local Python wheels; Phase 2C3.1 does not install
+PyTorch or TorchAudio. The script downloads and SHA-256 verifies the official
+OpenWakeWord v0.5.1 `hey_jarvis_v0.1.onnx`, `melspectrogram.onnx`,
+`embedding_model.onnx`, and `silero_vad.onnx` assets into ignored runtime
+storage.
+
+The exact flow is:
+
+```text
+IDLE (local wake inference; no persistence or LLM)
+  -> WAKE_DETECTED
+  -> LISTENING (Silero score + deterministic endpoint policy)
+  -> PROCESSING
+  -> temporary 16 kHz WAV -> whisper.cpp -> delete by default
+  -> exact no-speech marker filter
+  -> anchored LocalVoiceCommandRouter
+       -> STOP only -> SafeRobotController -> SafetySupervisor -> simulator
+       -> otherwise -> ConversationService -> structured tools/safety/simulator
+  -> Kokoro am_fenrir synthesis
+  -> SPEAKING (cancellable local playback)
+  -> IDLE
+```
+
+Phase 2C3.1 keeps continuation behavior A: every completed response returns to
+the wake-word requirement. A follow-up listening window and indefinite open
+conversation are deliberately not implemented. `/talk`, `stt-check`, typed
+chat, and all existing CLI device commands remain available.
+
+## Wake-word model and licensing
+
+Continuous voice mode uses the official OpenWakeWord v0.5.1
+`hey_jarvis_v0.1.onnx` classifier downloaded to ignored runtime storage. Its
+SHA-256 is
+`94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb`.
+The repository's tracked legacy `wakeword.onnx` has SHA-256
+`2b359120c5facbc7cfe58e87812cb7c303b697f3360cb99d3cd6f9a5e1dd64b9`.
+It came from the upstream repository history, whose Linux setup labeled and
+downloaded it as `hey_jarvis_v0.1.onnx`. Its graph input shape is compatible
+with the OpenWakeWord feature pipeline, but its bytes no longer correspond to
+a file at that historical moving URL. That is provenance evidence, not a
+complete redistribution chain. It is retained untouched for legacy
+compatibility but is not the continuous-voice classifier. The runtime and CLI
+identify the phrase honestly as **Hey Jarvis**; bare “Jarvis” may have a higher
+false-reject rate.
+
+OpenWakeWord code is Apache-2.0. Its project documents bundled pretrained wake
+models under CC BY-NC-SA 4.0. The official classifier is downloaded rather
+than redistributed by this repository and remains suitable only for this
+private prototype unless those terms are acceptable. Do not assume Jarvis's
+MIT license grants commercial model rights. The legacy classifier's provenance
+is still unresolved.
+
+## VAD and endpoint policy
+
+Phase 2C3.1 uses the ONNX Silero VAD wrapper already supplied by OpenWakeWord.
+This keeps one lightweight ONNX inference stack and avoids a separate VAD
+framework or PyTorch. The VAD provider returns only a speech probability. A
+Jarvis-owned deterministic segmenter—not the model and never the LLM—requires
+sustained speech, retains a short in-memory pre-roll, ends after trailing
+silence, rejects no-speech/noise-only windows, and enforces a maximum duration.
+
+Initial prototype defaults are threshold `0.50`, minimum sustained speech
+`240 ms`, trailing silence `640 ms`, no-speech timeout `8 s`, and maximum
+utterance `18 s`. These are explicit starting points within the requested
+500–800 ms and 15–20 s ranges, not universal measured optima. They must be
+measured with the actual microphone and room before further tuning.
+
+## Barge-in and echo limitation
+
+The default `barge_in_mode` is `wakeword`. During `SPEAKING`, generic Silero
+speech probability cannot cancel playback. The same local Hey Jarvis detector
+runs against a strictly bounded 320 ms in-memory rolling buffer. A confirmed
+wake detection signals the chunk-cancellable playback handle and immediately
+hands the same continuously open microphone stream to command segmentation:
+
+```text
+SPEAKING -> wake detected -> playback cancel signal
+  -> INTERRUPTED -> LISTENING (same stream, no drain/restart)
+  -> Silero-controlled command capture -> Whisper
+```
+
+The oldest buffer frames are passive pre-roll. Only the newest tail, kept
+shorter than the configured VAD speech minimum, is re-scored with subsequent
+live frames. This preserves a command phoneme that began in the wake-detection
+frame while requiring at least one new live frame before VAD can confirm
+speech; old Fenrir leakage cannot confirm a command by itself. The command
+start window is separately bounded to 1.5 seconds after wake detection, so a
+natural pause of about half a second remains supported without inheriting the
+normal eight-second idle listening window. Both values are configurable as
+`barge_in_pre_roll_ms` (200--500) and
+`barge_in_command_start_timeout_seconds` (0.5--3.0).
+
+Normal playback completion drains stale microphone frames and resets both wake
+and VAD state before returning to `IDLE`. The handoff path never drains or
+restarts the microphone. The former generic VAD-only interruption can be
+selected as `vad_experimental`, but is not the default because Fenrir speaker
+leakage caused repeatable self-barge-ins.
+
+The same lossless handoff principle applies to normal idle activation. While
+`IDLE`, wake detection keeps only the segmenter's bounded 240 ms pre-roll. On
+detection, its newest sub-threshold tail and subsequent frames enter VAD in
+sequence, preserving a first command word that begins immediately after “Hey
+Jarvis.” The microphone is neither drained nor restarted between
+`WAKE_DETECTED` and `LISTENING`.
+
+Detector reset ownership is centralized at idle-wait entry, playback start,
+playback completion, interruption handoff, and no-speech discard.
+Speaking-state debug records include the actual wake score and
+`source=speaking`, along with cancellation and frame-continuity evidence. This
+distinguishes a strong human activation followed by no command from low-score
+Fenrir leakage, but is not acoustic echo cancellation.
+
+This is not acoustic echo cancellation. Plain speech-over-speaker interruption
+such as saying only “Stop” is not considered reliable. The supported Phase
+2C3.1 interruption phrase is **“Hey Jarvis, stop.”** Speaker leakage could
+still trigger if playback itself contains the wake phrase, and far-field
+performance remains environment-dependent.
+
+## Blank audio and deterministic local stop
+
+After VAD and STT, empty text and exact known Whisper no-speech markers such as
+`[BLANK_AUDIO]` and `[ Silence ]` are discarded before conversation or TTS. A
+wake-only transcript (`Jarvis` or `Hey Jarvis`) from handoff pre-roll is also
+discarded rather than sent to Qwen.
+Recordings shorter than the configured VAD-confirmed speech minimum are also
+discarded. Debug mode reports `[VOICE] no_speech_discarded`; normal mode stays
+quiet and returns to `IDLE`.
+
+An anchored, punctuation-normalizing allowlist recognizes only explicit STOP
+forms such as `stop`, `please stop`, and `hey jarvis stop`. Negations,
+questions, stop-sign discussion, and every other robot action do not match.
+Matched STOP bypasses Qwen and executes this existing semantic path:
+
+```text
+Whisper transcript
+  -> LocalVoiceCommandRouter (STOP only)
+  -> SafeLocalVoiceCommandExecutor integration
+  -> SafeRobotController.execute_intent(RobotIntent(STOP))
+  -> SafetySupervisor (STOP always allowed)
+  -> SimulatedRobot
+  -> fixed local “Stopped.” acknowledgement through existing TTS
+```
+
+The router cannot clear e-stop, publish safety state, or request any movement
+other than STOP. This remains a convenience/safety path, not the physical
+emergency-stop implementation. A future physical robot requires an ESP32
+watchdog, local motor timeout, and physical power-disable/e-stop circuit.
+
+## Warmup, latency, and privacy
+
+Voice-mode startup lazily loads and warms wake/VAD inference. When
+`tts_preload=true`, Kokoro synthesizes one tiny phrase once; the returned audio
+is discarded and never played or written. Whisper remains process-per-command.
+Ollama requests in this mode use `voice_ollama_keep_alive` (`30m` by default),
+but Jarvis never starts Ollama or pulls a model automatically.
+
+Use `python -m jarvis voice --debug-latency` or set
+`voice_debug_latency=true` to print real monotonic timings for wake-to-speech,
+utterance duration, end detection, STT, LLM/tools, TTS, playback start, and
+speech-end-to-audio-start, wake-to-playback-cancel, and STT-to-local-stop.
+While waiting for the wake phrase, debug mode prints
+only a one-second rolling score peak and the configured threshold; it never
+logs room audio. Normal voice mode does not print these diagnostics.
+The prototype target is under `2.0 s` and the acceptable threshold is
+`2.5 s`; hardware measurements are reported separately and are never
+fabricated by the code.
+
+Wake-barge debug output additionally reports the bounded pre-roll duration,
+the timestamp gap and optional frame-sequence gap at the first newly consumed
+frame, and the command speech-start offset. Audio content is never logged.
+
+## Display Markdown and speech text
+
+Assistant display text and `ConversationService` history retain the model's
+original Markdown. Immediately before either Kokoro or Piper synthesis,
+`TTSService` applies a provider-independent, deterministic
+`prepare_text_for_speech` transformation. It removes emphasis markers,
+heading/blockquote/list markers, code fences, and Markdown link destinations;
+keeps visible link labels, image alt text, inline-code contents, useful numbered
+list boundaries, and short fenced-code contents; and normalizes whitespace and
+punctuation spacing. It never renders Markdown, fetches a link, opens a URL,
+executes code, or touches the filesystem.
+
+All normal assistant speech and the fixed local “Stopped.” acknowledgement pass
+through this boundary. Streaming generation, sentence queues, early playback,
+and parallel synthesis remain deferred to Phase 2C3.2.
+
+Normal conversation uses validated Ollama temperature `0.2` by default, with
+thinking still off. This is a conservative factual-assistant setting; it does
+not eliminate hallucinations. The immutable prompt requires normal general-
+knowledge answers, treats robot tools as optional action mechanisms, and tells
+Jarvis to acknowledge uncertainty instead of inventing facts.
+
+Continuous microphone frames, wake buffers, VAD scores, and rejected room
+audio remain in memory and are not logged. Only an accepted utterance becomes
+a uniquely named temporary WAV required by process-per-command whisper.cpp.
+It is deleted after success or failure unless the existing explicit
+`retain_recordings=true` developer setting is used. There is no network or
+cloud fallback.

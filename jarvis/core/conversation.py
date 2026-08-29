@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from threading import RLock
 
@@ -22,6 +23,7 @@ class ConversationSettings:
     max_turns: int = 12
     thinking: bool = False
     max_tool_rounds: int = 3
+    temperature: float = 0.2
 
     def __post_init__(self) -> None:
         if not isinstance(self.model, str) or not self.model.strip():
@@ -30,6 +32,14 @@ class ConversationSettings:
             raise ValueError("max_turns must be a positive integer")
         if not isinstance(self.thinking, bool):
             raise TypeError("thinking must be a boolean")
+        if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(self.temperature)
+            or not 0 <= self.temperature <= 2
+        ):
+            raise ValueError("conversation temperature must be a finite number from 0 to 2")
+        object.__setattr__(self, "temperature", float(self.temperature))
         if (
             not isinstance(self.max_tool_rounds, int)
             or isinstance(self.max_tool_rounds, bool)
@@ -44,6 +54,7 @@ class ConversationStatus:
     endpoint: str
     model: str
     thinking: bool
+    temperature: float
     history_turns: int
     max_turns: int
     tools_enabled: bool
@@ -131,6 +142,7 @@ class ConversationService:
             messages=(self._system_message, *self._flat_history(), *turn),
             thinking=self._thinking,
             tools=definitions,
+            temperature=self._settings.temperature,
         )
         try:
             return self._provider.generate(request, cancellation=cancellation)
@@ -247,6 +259,7 @@ class ConversationService:
                 endpoint=self._provider.endpoint,
                 model=self._settings.model,
                 thinking=self._thinking,
+                temperature=self._settings.temperature,
                 history_turns=len(self._history_turns),
                 max_turns=self._settings.max_turns,
                 tools_enabled=self._tool_executor is not None,

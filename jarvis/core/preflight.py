@@ -1,4 +1,4 @@
-"""Read-only, platform-aware Jarvis Phase 2C2 diagnostics."""
+"""Read-only, platform-aware Jarvis Phase 2C3.1 diagnostics."""
 
 from __future__ import annotations
 
@@ -258,13 +258,61 @@ def run_preflight(
                     path,
                 )
             )
+    openwakeword_available = module_available("openwakeword")
     checks.append(
         PreflightCheck(
+            "OpenWakeWord",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if openwakeword_available else CheckStatus.MISSING,
+            (
+                "local ONNX wake/VAD package installed; no inference performed"
+                if openwakeword_available
+                else "run scripts/setup_voice_windows.ps1"
+            ),
+        )
+    )
+    wake_assets = (
+        (
             "Wake-word model",
-            RequirementLevel.FUTURE,
-            CheckStatus.AVAILABLE if exists(paths.wakeword_model) else CheckStatus.MISSING,
-            "model file found" if exists(paths.wakeword_model) else "model file not found; wake word is a future feature",
-            paths.wakeword_model,
+            paths.wakeword_classifier_model,
+            "pinned official OpenWakeWord hey-Jarvis classifier found (private development only)",
+        ),
+        (
+            "Wake-word mel model",
+            paths.wakeword_melspectrogram_model,
+            "pinned OpenWakeWord feature model found",
+        ),
+        (
+            "Wake-word embedding model",
+            paths.wakeword_embedding_model,
+            "pinned OpenWakeWord feature model found",
+        ),
+        (
+            "VAD model",
+            paths.vad_model,
+            "pinned local Silero ONNX model found",
+        ),
+    )
+    for name, path, found_detail in wake_assets:
+        found = exists(path)
+        checks.append(
+            PreflightCheck(
+                name,
+                RequirementLevel.CURRENT,
+                CheckStatus.AVAILABLE if found else CheckStatus.MISSING,
+                found_detail if found else "local model missing; run scripts/setup_voice_windows.ps1",
+                path,
+            )
+        )
+    voice_assets_ready = openwakeword_available and all(
+        exists(path) for _, path, _ in wake_assets
+    )
+    voice_config_ready = all(
+        (
+            config.voice_mode_enabled,
+            config.wakeword_enabled,
+            config.vad_enabled,
+            config.tts_enabled,
         )
     )
     sounddevice_available = module_available("sounddevice")
@@ -318,6 +366,42 @@ def run_preflight(
             "not inspected because sounddevice is unavailable",
         )
     checks.append(speaker_check)
+    check_status = {check.name: check.status for check in checks}
+    selected_tts_checks = (
+        ("kokoro-onnx", "Kokoro model", "Kokoro voice bundle")
+        if config.tts_provider == "kokoro"
+        else (
+            "Piper package",
+            f"Piper {config.tts_voice} model",
+            f"Piper {config.tts_voice} config",
+        )
+    )
+    required_voice_checks = (
+        "Ollama",
+        "Whisper.cpp",
+        f"Whisper model ({config.stt_model})",
+        "sounddevice",
+        "Microphone",
+        "Speaker",
+        *selected_tts_checks,
+    )
+    complete_runtime_ready = all(
+        check_status.get(name) is CheckStatus.AVAILABLE
+        for name in required_voice_checks
+    )
+    voice_ready = voice_assets_ready and voice_config_ready and complete_runtime_ready
+    checks.append(
+        PreflightCheck(
+            "Voice mode",
+            RequirementLevel.CURRENT,
+            CheckStatus.AVAILABLE if voice_ready else CheckStatus.MISSING,
+            (
+                "configured; local LLM/STT/TTS/wake/VAD assets and audio devices are ready; no stream or inference run"
+                if voice_ready
+                else "not ready: inspect missing current voice dependencies, assets, devices, or private enable flags above"
+            ),
+        )
+    )
     camera_backend = module_available("cv2") or bool(which("rpicam-still"))
     checks.append(
         PreflightCheck(
@@ -331,7 +415,7 @@ def run_preflight(
 
 
 def format_report(report: PreflightReport) -> str:
-    lines = ["Jarvis Phase 2C2 preflight (read-only)", ""]
+    lines = ["Jarvis Phase 2C3.1 preflight (read-only)", ""]
     for check in report.checks:
         path = f" [{check.path}]" if check.path is not None else ""
         lines.append(f"{check.status.value:11} {check.level.value:15} {check.name}: {check.detail}{path}")
