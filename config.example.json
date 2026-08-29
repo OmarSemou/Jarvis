@@ -48,5 +48,13 @@
   "barge_in_command_start_timeout_seconds": 1.5,
   "tts_preload": true,
   "voice_debug_latency": false,
-  "voice_ollama_keep_alive": "30m"
+  "voice_ollama_keep_alive": "30m",
+  "memory_enabled": true,
+  "memory_database_path": "bmo.db",
+  "memory_max_context_entries": 8,
+  "memory_max_context_chars": 3000,
+  "memory_max_value_chars": 500,
+  "memory_max_key_chars": 80,
+  "memory_max_summary_chars": 240,
+  "memory_max_records": 500
 }

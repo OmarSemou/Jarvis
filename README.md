@@ -79,13 +79,18 @@ preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
 - Lossless bounded pre-roll for both normal wake activation and wake-gated
   playback interruption, with score and frame-continuity diagnostics.
 - A conservative, configurable Ollama conversation temperature of `0.2`.
+- A controlled local SQLite memory service with bounded retrieval, explicit
+  inspection/deletion commands, and privacy-first write policy.
+- Strong explicit “remember”/“forget” requests use a deterministic structured
+  memory gate, commit before acknowledgement, and log only safe action metadata.
 - An observation-only, resizable Tk face using the unchanged BMO prototype
   PNGs, with lifecycle animation and generation-safe playback state.
 
 The existing `agent.py` remains a compatibility launcher. Phase 2C3.2 does not
 reuse its legacy last-stdout-line Whisper parsing or GUI audio thread. Wake
-word, camera, memory, and GUI implementations there have not been
-modularized. The new chat/hearing path does not use the legacy `BotGUI` class.
+word, camera, and GUI implementations there have not been modularized. The
+new chat/hearing path does not use the legacy `BotGUI` class; Phase 2E memory
+is owned by the separate `jarvis.memory` package.
 
 ## Development environment
 
@@ -116,6 +121,12 @@ The CLI supports `/status`, `/reset`, `/think on`, `/think off`,
 `/mic status`, `/mic use <device>`, `/voice status`, `/voice on`, `/voice off`,
 `/voice provider <kokoro|piper>`, `/voice use <voice>`, `/speaker list`,
 `/speaker status`, `/speaker use <device>`, and `/quit`.
+Persistent memory is inspectable with `/memory status`, `/memory list`,
+`/memory show <id>`, `/memory search <text>`, `/memory forget <id>`, and the
+explicitly confirmed `/memory forget-all`. Standalone equivalents are
+available through `python -m jarvis memory ...`.
+Run voice with `--debug-latency` to print the canonical memory database path and
+the semantic tool names exposed to the local model.
 Robot actions print concise developer events such as `[ROBOT] gesture=wave`.
 The `/robot estop-reset` command is trusted local CLI control and is not in the
 LLM tool registry.
@@ -300,6 +311,12 @@ Supported fields are:
 - `barge_in_command_start_timeout_seconds` (default `1.5`), `tts_preload`,
   `voice_debug_latency`
 - `voice_ollama_keep_alive` (default `30m` for an active voice session)
+- `memory_enabled` (default `true`), `memory_database_path` (default
+  `bmo.db`, resolved beneath ignored `data/`)
+- `memory_max_context_entries` (default `8`), `memory_max_context_chars`
+  (default `3000`), `memory_max_value_chars` (default `500`),
+  `memory_max_key_chars` (default `80`), `memory_max_summary_chars`
+  (default `240`), and `memory_max_records` (default `500`)
 
 Unknown keys and legacy aliases are handled deliberately by
 `jarvis.core.config`. Runtime data is written beneath ignored `data/`, not into
@@ -387,7 +404,7 @@ explicit acceleration decision.
 ## Not implemented yet
 
 Full acoustic echo cancellation, streaming STT, LLM token streaming, camera/
-vision, web search, persistent memory, ESP32 communication,
+vision, web search, ESP32 communication,
 motors, servos, and physical movement are not part of Phase 2D. Raspberry Pi
 deployment comes after desktop and simulator validation.
 

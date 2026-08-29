@@ -91,6 +91,14 @@ KNOWN_KEYS = frozenset(
         "tts_preload",
         "voice_debug_latency",
         "voice_ollama_keep_alive",
+        "memory_enabled",
+        "memory_database_path",
+        "memory_max_context_entries",
+        "memory_max_context_chars",
+        "memory_max_value_chars",
+        "memory_max_key_chars",
+        "memory_max_summary_chars",
+        "memory_max_records",
     }
 )
 
@@ -156,6 +164,14 @@ class JarvisConfig:
     tts_preload: bool = True
     voice_debug_latency: bool = False
     voice_ollama_keep_alive: str = "30m"
+    memory_enabled: bool = True
+    memory_database_path: str = "bmo.db"
+    memory_max_context_entries: int = 8
+    memory_max_context_chars: int = 3000
+    memory_max_value_chars: int = 500
+    memory_max_key_chars: int = 80
+    memory_max_summary_chars: int = 240
+    memory_max_records: int = 500
 
     def effective_system_prompt(self, fallback: str) -> str:
         """Return the configured prompt, then append optional extra guidance."""
@@ -220,6 +236,14 @@ class JarvisConfig:
             "tts_preload": self.tts_preload,
             "voice_debug_latency": self.voice_debug_latency,
             "voice_ollama_keep_alive": self.voice_ollama_keep_alive,
+            "memory_enabled": self.memory_enabled,
+            "memory_database_path": self.memory_database_path,
+            "memory_max_context_entries": self.memory_max_context_entries,
+            "memory_max_context_chars": self.memory_max_context_chars,
+            "memory_max_value_chars": self.memory_max_value_chars,
+            "memory_max_key_chars": self.memory_max_key_chars,
+            "memory_max_summary_chars": self.memory_max_summary_chars,
+            "memory_max_records": self.memory_max_records,
         }
 
 
@@ -250,6 +274,33 @@ def _validate_string(values: Mapping[str, Any], key: str, problems: list[str]) -
 def _migrate_keys(raw: Mapping[str, Any], problems: list[str]) -> tuple[dict[str, Any], list[str]]:
     values = dict(raw)
     migrations: list[str] = []
+    # Phase 2E accepts a structured ``memory`` object while retaining the
+    # upstream boolean ``memory`` compatibility key.  A mapping is therefore
+    # unambiguously the new form; a bool continues to mean ``chat_memory``.
+    nested_memory = values.get("memory")
+    if isinstance(nested_memory, Mapping):
+        values.pop("memory", None)
+        nested_map = {
+            "enabled": "memory_enabled",
+            "database_path": "memory_database_path",
+            "max_context_entries": "memory_max_context_entries",
+            "max_context_chars": "memory_max_context_chars",
+            "max_value_chars": "memory_max_value_chars",
+            "max_key_chars": "memory_max_key_chars",
+            "max_summary_chars": "memory_max_summary_chars",
+            "max_records": "memory_max_records",
+        }
+        for nested_key, current_key in nested_map.items():
+            if nested_key not in nested_memory:
+                continue
+            if current_key in values:
+                problems.append(f"memory key '{nested_key}' conflicts with '{current_key}'")
+            else:
+                values[current_key] = nested_memory[nested_key]
+        unknown_nested = sorted(set(nested_memory) - set(nested_map))
+        if unknown_nested:
+            problems.append("unknown memory key(s): " + ", ".join(unknown_nested))
+        migrations.append("structured 'memory' settings were migrated to validated memory_* keys")
     for legacy, current in LEGACY_KEY_MAP.items():
         if legacy not in values:
             continue
@@ -490,6 +541,37 @@ def parse_config(
         merged, "voice_ollama_keep_alive", problems
     )
 
+    memory_enabled = merged["memory_enabled"]
+    if not isinstance(memory_enabled, bool):
+        problems.append("'memory_enabled' must be a boolean")
+    memory_database_path = _validate_string(merged, "memory_database_path", problems)
+    if memory_database_path:
+        path_value = Path(memory_database_path).expanduser()
+        if (
+            path_value.is_absolute()
+            or ".." in path_value.parts
+            or not path_value.parts
+            or (len(path_value.parts) == 1 and path_value.parts[0].casefold() == "data")
+        ):
+            problems.append("'memory_database_path' must be a relative path inside data/")
+    for key in (
+        "memory_max_context_entries",
+        "memory_max_context_chars",
+        "memory_max_value_chars",
+        "memory_max_key_chars",
+        "memory_max_summary_chars",
+        "memory_max_records",
+    ):
+        value = merged[key]
+        if not _is_int(value) or value <= 0:
+            problems.append(f"'{key}' must be a positive integer")
+    if _is_int(merged["memory_max_context_entries"]) and merged["memory_max_context_entries"] > 50:
+        problems.append("'memory_max_context_entries' must be at most 50")
+    if _is_int(merged["memory_max_context_chars"]) and merged["memory_max_context_chars"] > 20_000:
+        problems.append("'memory_max_context_chars' must be at most 20000")
+    if _is_int(merged["memory_max_records"]) and merged["memory_max_records"] > 10_000:
+        problems.append("'memory_max_records' must be at most 10000")
+
     if problems:
         raise ConfigValidationError(source_path, problems)
 
@@ -546,6 +628,14 @@ def parse_config(
         tts_preload=tts_preload,
         voice_debug_latency=voice_debug_latency,
         voice_ollama_keep_alive=voice_ollama_keep_alive,
+        memory_enabled=memory_enabled,
+        memory_database_path=memory_database_path,
+        memory_max_context_entries=merged["memory_max_context_entries"],
+        memory_max_context_chars=merged["memory_max_context_chars"],
+        memory_max_value_chars=merged["memory_max_value_chars"],
+        memory_max_key_chars=merged["memory_max_key_chars"],
+        memory_max_summary_chars=merged["memory_max_summary_chars"],
+        memory_max_records=merged["memory_max_records"],
     )
     return ConfigLoadResult(config, source_path, tuple(migrations), tuple(unknown))
 

@@ -4,8 +4,16 @@
   "voice_model": "piper/en_GB-semaine-medium.onnx",
   "chat_memory": true,
   "camera_rotation": 180,
-  "system_prompt": "You are BMO, a cheerful, curious, and technically capable robot companion running on a Raspberry Pi. You have access to the following tools. To use one, reply ONLY with the JSON format shown:\n\n1. Check Time: {\"action\": \"get_time\"}\n2. Take Photo: {\"action\": \"capture_image\"}\n3. Search Web: {\"action\": \"search_web\", \"query\": \"your search term\"}\n\nIf no tool is needed, just reply normally. Keep responses short, playful, and accurate. Become clear and serious for safety.",
+  "system_prompt": "You are BMO, a cheerful, curious, and technically capable local desktop companion. Keep responses natural, concise, playful, and accurate. Use only the explicitly provided native tools for simulated robot actions or controlled memory. Do not invent tools, pseudo-JSON, web results, or hardware capabilities.",
   "system_prompt_extras": "",
   "input_device": null,
-  "input_sample_rate": 44100
+  "input_sample_rate": 44100,
+  "memory_enabled": true,
+  "memory_database_path": "bmo.db",
+  "memory_max_context_entries": 8,
+  "memory_max_context_chars": 3000,
+  "memory_max_value_chars": 500,
+  "memory_max_key_chars": 80,
+  "memory_max_summary_chars": 240,
+  "memory_max_records": 500
 }

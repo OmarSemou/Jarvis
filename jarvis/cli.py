@@ -61,6 +61,9 @@ from jarvis.audio.wake.openwakeword import OpenWakeWord, OpenWakeWordSettings, W
 from jarvis.core.config import ConfigValidationError, JarvisConfig, load_for_paths
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.core.paths import JarvisPaths
+from jarvis.memory import MemoryPolicy, MemoryService, SQLiteMemoryStore
+from jarvis.memory.models import MemoryEntry
+from jarvis.memory.tools import MemoryToolExecutor
 from jarvis.face.assets import default_bmo_asset_set
 from jarvis.face.controller import FaceController
 from jarvis.face.demo import FaceDemoSettings, run_face_demo
@@ -81,6 +84,7 @@ from jarvis.integrations.voice_stop import SafeLocalVoiceCommandExecutor
 from jarvis.tools.policy import RobotToolPolicy
 from jarvis.tools.registry import RobotToolRegistry
 from jarvis.tools.types import ToolExecutor
+from jarvis.tools.composite import CompositeToolExecutor
 
 
 InputFunction = Callable[[str], str]
@@ -91,6 +95,33 @@ OutputFunction = Callable[[str], None]
 class RobotRuntime:
     controller: SafeRobotController
     tools: RobotToolPolicy
+
+
+def create_memory_runtime(
+    config: JarvisConfig,
+    paths: JarvisPaths,
+    *,
+    logger: OutputFunction | None = None,
+    debug: bool = False,
+) -> MemoryService:
+    """Create the explicitly initialized local memory service."""
+
+    database = paths.memory_database_path(config.memory_database_path)
+    policy = MemoryPolicy(
+        max_key_chars=config.memory_max_key_chars,
+        max_value_chars=config.memory_max_value_chars,
+        max_summary_chars=config.memory_max_summary_chars,
+        max_context_entries=config.memory_max_context_entries,
+        max_context_chars=config.memory_max_context_chars,
+        max_records=config.memory_max_records,
+    )
+    return MemoryService(
+        SQLiteMemoryStore(database),
+        policy,
+        enabled=config.memory_enabled,
+        logger=logger,
+        debug=debug,
+    )
 
 
 def create_voice_runtime(
@@ -205,8 +236,20 @@ def create_conversation(
     config: JarvisConfig,
     *,
     tool_executor: ToolExecutor | None = None,
+    memory_service: MemoryService | None = None,
     keep_alive: str | None = None,
 ) -> ConversationService:
+    if memory_service is not None and memory_service.enabled:
+        memory_tools = MemoryToolExecutor(memory_service)
+        if tool_executor is None:
+            tool_executor = memory_tools
+        else:
+            names = {
+                definition.name
+                for definition in getattr(tool_executor, "definitions", ())
+            }
+            if not {"remember_memory", "forget_memory"}.issubset(names):
+                tool_executor = CompositeToolExecutor(tool_executor, memory_tools)
     return ConversationService(
         create_ollama_provider(config, keep_alive=keep_alive),
         ConversationSettings(
@@ -221,6 +264,7 @@ def create_conversation(
             configured_extras=config.system_prompt_extras,
         ),
         tool_executor=tool_executor,
+        memory_service=memory_service,
     )
 
 
@@ -302,6 +346,7 @@ def _format_status(service: ConversationService) -> str:
         f"Temperature: {status.temperature:g}\n"
         f"History: {status.history_turns}/{status.max_turns} turns\n"
         f"Robot tools: {'enabled' if status.tools_enabled else 'disabled'}\n"
+        f"Memory retrieval: {'enabled' if status.memory_enabled else 'disabled'}\n"
         f"Tool round limit: {status.max_tool_rounds}"
     )
 
@@ -317,6 +362,25 @@ def _format_robot_status(controller: SafeRobotController) -> str:
         f"Expression: {state.expression.value}\n"
         f"Last gesture: {gesture}\n"
         f"E-stop: {'latched' if state.emergency_stop_latched else 'clear'}"
+    )
+
+
+def _format_memory_entry(entry: MemoryEntry) -> str:
+    return f"{entry.id}: [{entry.category.value}] {entry.key} = {entry.value}"
+
+
+def _format_memory_status(memory: MemoryService) -> str:
+    status = memory.status()
+    if not status.get("enabled", False):
+        return "Memory: disabled"
+    if not status.get("available", False):
+        return f"Memory: unavailable\nPath: {status.get('path', '')}\nReason: {status.get('reason', 'unavailable')}"
+    return (
+        "Memory: enabled\n"
+        f"Path: {status['path']}\n"
+        f"Schema: {status['schema_version']}\n"
+        f"Active: {status['active']}\n"
+        f"Total records: {status['total']}"
     )
 
 
@@ -490,6 +554,8 @@ def run_chat(
     robot_controller: SafeRobotController | None = None,
     voice_runtime: VoiceInputService | None = None,
     tts_runtime: TTSService | None = None,
+    memory_service: MemoryService | None = None,
+    debug_tools: bool = False,
     input_fn: InputFunction = input,
     output_fn: OutputFunction = print,
 ) -> int:
@@ -497,6 +563,9 @@ def run_chat(
     output_fn(f"{ACTIVE_ROBOT_NAME} Local")
     output_fn(f"Model: {status.model}")
     output_fn(f"Thinking: {'on' if status.thinking else 'off'}")
+    if debug_tools:
+        names = tuple(getattr(service, "tool_names", ()))
+        output_fn("[TOOLS] available=" + ",".join(names or ("none",)))
     if voice_runtime is not None:
         stt_provider = getattr(voice_runtime, "stt", None)
         stt_settings = getattr(stt_provider, "settings", None)
@@ -510,6 +579,7 @@ def run_chat(
     output_fn(
         "Commands: /status, /reset, /think on, /think off, "
         "/robot status, /robot estop, /robot estop-reset, "
+        "/memory status|list|show <id>|search <text>|forget <id>|forget-all, "
         "/talk, /stt status, /mic list, /mic status, /mic use <device>, "
         "/voice status|on|off|<fenrir|bmo>, /voice provider <name>, /voice use <voice>, "
         "/speaker list|status|use <device>, /quit"
@@ -735,6 +805,48 @@ def run_chat(
                 prefix = "Reset accepted" if transition.accepted else "Reset denied"
                 output_fn(f"{prefix}: {transition.message}.")
             continue
+        if command == "/memory status":
+            if memory_service is None:
+                output_fn("Memory unavailable.")
+            else:
+                output_fn(_format_memory_status(memory_service))
+            continue
+        if command == "/memory list":
+            if memory_service is None:
+                output_fn("Memory unavailable.")
+            else:
+                entries = memory_service.list()
+                output_fn("No active memories." if not entries else "\n".join(_format_memory_entry(entry) for entry in entries))
+            continue
+        if command == "/memory" or command.startswith("/memory "):
+            if memory_service is None:
+                output_fn("Memory unavailable.")
+                continue
+            argument = user_text[len("/memory") :].strip()
+            parts = argument.split(maxsplit=1)
+            action = parts[0].casefold() if parts else ""
+            value = parts[1].strip() if len(parts) > 1 else ""
+            if action == "show" and value.isdecimal():
+                entry = memory_service.show(int(value))
+                output_fn("Memory not found." if entry is None else _format_memory_entry(entry))
+            elif action == "search" and value:
+                entries = memory_service.search(value)
+                output_fn("No matching memories." if not entries else "\n".join(_format_memory_entry(entry) for entry in entries))
+            elif action == "forget" and value.isdecimal():
+                output_fn(memory_service.forget(int(value)).message)
+            elif action == "forget-all":
+                try:
+                    confirmation = input_fn("Type FORGET ALL to confirm: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    output_fn("Forget-all cancelled.")
+                    continue
+                if confirmation != "FORGET ALL":
+                    output_fn("Forget-all cancelled.")
+                else:
+                    output_fn(memory_service.forget_all().message)
+            else:
+                output_fn("Usage: /memory status|list|show <id>|search <text>|forget <id>|forget-all")
+            continue
         if command.startswith("/"):
             output_fn("Unknown command. Use /status for the command list.")
             continue
@@ -749,13 +861,23 @@ def _load_runtime_config() -> JarvisConfig:
 
 
 def chat_command(output_fn: OutputFunction = print) -> int:
+    memory: MemoryService | None = None
     try:
         paths = JarvisPaths.discover()
         config = load_for_paths(paths).config
         runtime = create_robot_runtime(output_fn=output_fn)
+        memory = create_memory_runtime(config, paths, logger=output_fn)
+        tools: ToolExecutor | None = runtime.tools
+        if memory.enabled and hasattr(runtime.tools, "definitions"):
+            tools = CompositeToolExecutor(runtime.tools, MemoryToolExecutor(memory))
         voice = create_voice_runtime(config, paths)
         tts = create_tts_runtime(config, paths)
-        service = create_conversation(config, tool_executor=runtime.tools)
+        try:
+            service = create_conversation(config, tool_executor=tools, memory_service=memory)
+        except TypeError as exc:
+            if "memory_service" not in str(exc):
+                raise
+            service = create_conversation(config, tool_executor=tools)
     except (ConfigValidationError, ImportError, OSError, RuntimeError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
         return 2
@@ -765,10 +887,14 @@ def chat_command(output_fn: OutputFunction = print) -> int:
             robot_controller=runtime.controller,
             voice_runtime=voice,
             tts_runtime=tts,
+            memory_service=memory,
             output_fn=output_fn,
+            debug_tools=False,
         )
     finally:
         service.close()
+        if memory is not None:
+            memory.close()
 
 
 def face_command(
@@ -843,6 +969,7 @@ def voice_command(
     """Run local continuous wake/VAD/conversation/speech mode."""
 
     service: ConversationService | None = None
+    memory: MemoryService | None = None
     try:
         paths = JarvisPaths.discover()
         config = load_for_paths(paths).config
@@ -879,17 +1006,38 @@ def voice_command(
             output_fn=output_fn,
             state_sink=(face_controller.observe_robot_state if face_controller else None),
         )
+        memory = create_memory_runtime(
+            config,
+            paths,
+            logger=output_fn,
+            debug=debug_latency or config.voice_debug_latency,
+        )
+        voice_tools: ToolExecutor = robot.tools
+        if memory.enabled and hasattr(robot.tools, "definitions"):
+            voice_tools = CompositeToolExecutor(robot.tools, MemoryToolExecutor(memory))
         voice_input = create_voice_runtime(config, paths)
         tts = (
             create_tts_runtime(config, paths)
             if voice_profile is None
             else create_tts_runtime(config, paths, profile=voice_profile)
         )
-        service = create_conversation(
-            config,
-            tool_executor=robot.tools,
-            keep_alive=config.voice_ollama_keep_alive,
-        )
+        try:
+            service = create_conversation(
+                config,
+                tool_executor=voice_tools,
+                memory_service=memory,
+                keep_alive=config.voice_ollama_keep_alive,
+            )
+        except TypeError as exc:
+            # Preserve compatibility with embedders that still expose the
+            # pre-memory factory signature.
+            if "memory_service" not in str(exc):
+                raise
+            service = create_conversation(
+                config,
+                tool_executor=robot.tools,
+                keep_alive=config.voice_ollama_keep_alive,
+            )
         coordinator = create_voice_mode_coordinator(
             config,
             paths,
@@ -912,6 +1060,9 @@ def voice_command(
         output_fn(f"STT: whisper.cpp / {config.stt_model}")
         output_fn(f"LLM: {config.llm_model}")
         output_fn(f"Voice: {_format_voice_selection(tts)}")
+        if debug_latency or config.voice_debug_latency:
+            names = tuple(getattr(service, "tool_names", ()))
+            output_fn("[TOOLS] available=" + ",".join(names or ("none",)))
         barge_status = config.barge_in_mode if config.barge_in_enabled else "disabled"
         output_fn(f"Barge-in: {barge_status}")
         if face:
@@ -930,6 +1081,8 @@ def voice_command(
     finally:
         if service is not None:
             service.close()
+        if memory is not None:
+            memory.close()
 
 
 def llm_check_command(output_fn: OutputFunction = print) -> int:
@@ -938,7 +1091,7 @@ def llm_check_command(output_fn: OutputFunction = print) -> int:
     try:
         config = _load_runtime_config()
         provider = create_ollama_provider(config)
-    except (ConfigValidationError, ValueError) as exc:
+    except (ConfigValidationError, ImportError, ValueError) as exc:
         output_fn(f"Configuration error: {exc}")
         return 2
 
@@ -1156,6 +1309,51 @@ def tts_benchmark_clean_command(
         return 2
 
 
+def memory_command(
+    action: str = "status",
+    value: str | None = None,
+    *,
+    confirm: bool = False,
+    output_fn: OutputFunction = print,
+) -> int:
+    """Inspect or explicitly edit local memory without invoking the LLM."""
+
+    memory: MemoryService | None = None
+    try:
+        paths = JarvisPaths.discover()
+        config = load_for_paths(paths).config
+        memory = create_memory_runtime(config, paths, logger=output_fn)
+        normalized = action.casefold()
+        if normalized == "status":
+            output_fn(_format_memory_status(memory))
+        elif normalized == "list":
+            entries = memory.list()
+            output_fn("No active memories." if not entries else "\n".join(_format_memory_entry(entry) for entry in entries))
+        elif normalized == "show" and value and value.isdecimal():
+            entry = memory.show(int(value))
+            output_fn("Memory not found." if entry is None else _format_memory_entry(entry))
+        elif normalized == "search" and value:
+            entries = memory.search(value)
+            output_fn("No matching memories." if not entries else "\n".join(_format_memory_entry(entry) for entry in entries))
+        elif normalized == "forget" and value and value.isdecimal():
+            output_fn(memory.forget(int(value)).message)
+        elif normalized == "forget-all":
+            if not confirm:
+                output_fn("Refusing forget-all without --confirm.")
+                return 2
+            output_fn(memory.forget_all().message)
+        else:
+            output_fn("Usage: python -m jarvis memory status|list|show <id>|search <text>|forget <id>|forget-all --confirm")
+            return 2
+        return 0
+    except (ConfigValidationError, OSError, RuntimeError, ValueError) as exc:
+        output_fn(f"Memory configuration error: {exc}")
+        return 2
+    finally:
+        if memory is not None:
+            memory.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m jarvis", description="Jarvis local developer commands")
     subparsers = parser.add_subparsers(dest="command")
@@ -1227,6 +1425,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="keep the temporary benchmark WAV files for developer inspection",
     )
+    memory_parser = subparsers.add_parser("memory", help="inspect or edit local persistent memory")
+    memory_parser.add_argument(
+        "action",
+        choices=("status", "list", "show", "search", "forget", "forget-all"),
+    )
+    memory_parser.add_argument("value", nargs="?", help="memory id or search text")
+    memory_parser.add_argument("--confirm", action="store_true", help="confirm destructive forget-all")
     return parser
 
 
@@ -1259,6 +1464,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return tts_benchmark_command()
     if args.command == "tts-benchmark-clean":
         return tts_benchmark_clean_command(args.run_directory)
+    if args.command == "memory":
+        return memory_command(args.action, args.value, confirm=args.confirm)
     parser.print_help()
     return 2
 

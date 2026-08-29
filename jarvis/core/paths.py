@@ -74,6 +74,40 @@ class JarvisPaths:
         return self.data_dir / "memory.json"
 
     @property
+    def memory_database_file(self) -> Path:
+        """Default Phase 2E SQLite database under private runtime data."""
+
+        return self.data_dir / "bmo.db"
+
+    @property
+    def memory_database(self) -> Path:
+        """Alias used by embedders that prefer a noun over ``*_file``."""
+
+        return self.memory_database_file
+
+    @property
+    def memory_db(self) -> Path:
+        return self.memory_database_file
+
+    def memory_database_path(self, configured: str | None = None) -> Path:
+        """Resolve a configured database filename without escaping ``data``."""
+
+        if configured is None or not str(configured).strip():
+            return self.memory_database_file
+        candidate = Path(str(configured)).expanduser()
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError("memory_database_path must be a relative filename inside data/")
+        if candidate.parts and candidate.parts[0].casefold() == "data":
+            candidate = Path(*candidate.parts[1:])
+        if not candidate.parts:
+            raise ValueError("memory_database_path must name a database file")
+        resolved = (self.data_dir / candidate).resolve()
+        data_root = self.data_dir.resolve()
+        if resolved != data_root and data_root not in resolved.parents:
+            raise ValueError("memory_database_path must remain inside data/")
+        return resolved
+
+    @property
     def input_audio_file(self) -> Path:
         return self.data_dir / "input.wav"
 

@@ -1,8 +1,8 @@
 """BMO local companion runtime (the internal package name remains ``jarvis``).
 
-Phase 2C3.2 adds corrected local wake/VAD voice interaction and early queued
-speech while preserving robot tools, deterministic safety, push-to-talk, and
-the compatibility launcher.
+Phase 2E adds controlled local persistent memory while preserving the corrected
+voice interaction, robot tools, deterministic safety, push-to-talk, face, and
+compatibility launcher boundaries.
 """
 
 __version__ = "0.6.1"

@@ -10,7 +10,13 @@ from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 import httpx
-from ollama import Client, ResponseError
+try:  # Keep non-LLM commands usable when the optional client is not installed.
+    from ollama import Client, ResponseError
+except ModuleNotFoundError:  # pragma: no cover - exercised in minimal installs
+    Client = None  # type: ignore[assignment]
+
+    class ResponseError(Exception):
+        status_code: int | None = None
 
 from .base import (
     CancellationToken,
@@ -235,6 +241,11 @@ class OllamaLLM:
             self._client = client
         else:
             factory = client_factory or Client
+            if factory is None:
+                raise ImportError(
+                    "The Ollama Python client is not installed. "
+                    "Install project requirements before starting local chat."
+                )
             timeout = httpx.Timeout(
                 self._settings.read_timeout_seconds,
                 connect=self._settings.connect_timeout_seconds,

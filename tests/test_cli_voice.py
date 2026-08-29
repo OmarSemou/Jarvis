@@ -13,6 +13,9 @@ from jarvis.core.config import JarvisConfig
 from jarvis.core.paths import JarvisPaths
 from jarvis.core.conversation import ConversationService, ConversationSettings
 from jarvis.llm.base import LLMResponse
+from jarvis.memory import MemoryService, SQLiteMemoryStore
+from jarvis.memory.tools import MemoryToolExecutor
+from jarvis.tools.composite import CompositeToolExecutor
 from jarvis.robot.controller import create_simulated_controller
 from jarvis.tools.policy import RobotToolPolicy
 from jarvis.tools.registry import RobotToolRegistry
@@ -199,6 +202,41 @@ def test_voice_uses_same_structured_robot_tool_path_as_typing():
 
     assert "[ROBOT] gesture=wave" in output
     assert controller.state.last_gesture.value == "wave"
+
+
+def test_voice_path_persists_explicit_memory_and_new_session_retrieves_it(tmp_path):
+    db = tmp_path / "data" / "bmo.db"
+    memory = MemoryService(SQLiteMemoryStore(db))
+    provider = Provider([LLMResponse("Noted.", "qwen3:8b")])
+    conversation = make_service(provider, CompositeToolExecutor(MemoryToolExecutor(memory)))
+    output = []
+
+    result = run_chat(
+        conversation,
+        voice_runtime=FakeVoice("Remember that I prefer pistachio ice cream."),
+        memory_service=memory,
+        input_fn=inputs(["/talk", "", "/quit"]),
+        output_fn=output.append,
+    )
+
+    assert result == 0
+    assert len(memory.list()) == 1
+    assert memory.list()[0].value == "pistachio"
+    memory.close()
+
+    restarted = MemoryService(SQLiteMemoryStore(db))
+    query_provider = Provider([LLMResponse("Pistachio.", "qwen3:8b")])
+    # Use the same provider-neutral retrieval seam as a fresh application
+    # session; no history from the first conversation is reused.
+    restarted_conversation = ConversationService(
+        query_provider,
+        ConversationSettings(model="qwen3:8b", max_turns=3),
+        system_prompt="Test policy",
+        memory_service=restarted,
+    )
+    restarted_conversation.respond("What's my favorite ice cream?")
+    assert any("pistachio" in message.content.lower() for message in query_provider.requests[0].messages)
+    restarted.close()
 
 
 def test_microphone_commands_do_not_call_llm():

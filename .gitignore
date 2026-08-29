@@ -11,6 +11,8 @@ venv/
 .pytest_cache/
 .pytest-temp*/
 .pytest-full/
+.pytest-*/
+.pytest-bmo/
 .coverage
 htmlcov/
 build/
@@ -33,6 +35,9 @@ piper/
 # Private/runtime state, including recordings, STT output, downloaded tools,
 # and downloaded models, stays beneath data/.
 data/
+*.db
+*.db-shm
+*.db-wal
 config.local.json
 
 # Legacy runtime locations remain ignored during migration.

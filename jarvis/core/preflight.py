@@ -145,6 +145,33 @@ def run_preflight(
         )
     )
 
+    # Memory diagnostics are strictly read-only: this branch never opens or
+    # initializes SQLite and therefore cannot create data during preflight.
+    try:
+        memory_path = paths.memory_database_path(config.memory_database_path)
+        if not config.memory_enabled:
+            memory_detail = "disabled by configuration; no database will be opened"
+            memory_status = CheckStatus.AVAILABLE
+        elif exists(memory_path):
+            memory_detail = "configured SQLite database exists; schema not opened during preflight"
+            memory_status = CheckStatus.AVAILABLE
+        else:
+            memory_detail = "configured SQLite database will be created on explicit memory initialization"
+            memory_status = CheckStatus.NOT_CHECKED
+    except (OSError, ValueError) as exc:
+        memory_path = None
+        memory_detail = f"invalid memory path: {exc}"
+        memory_status = CheckStatus.MISSING
+    checks.append(
+        PreflightCheck(
+            "Memory",
+            RequirementLevel.CURRENT,
+            memory_status,
+            memory_detail,
+            memory_path,
+        )
+    )
+
     checks.append(
         PreflightCheck(
             "pytest",

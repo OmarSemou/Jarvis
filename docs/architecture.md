@@ -16,9 +16,41 @@ restores general conversational scope. Phase 2C3.2 adds provider-neutral
 sentence chunking, bounded PCM lookahead, and early ordered playback after the
 final tool-safe response is committed. The upstream `agent.py` remains the
 compatibility launcher. Streaming STT/LLM text, full echo cancellation, camera
-capture, memory storage, and physical hardware remain outside the new path.
+capture and physical hardware remain outside the new path; Phase 2E adds
+controlled local memory storage as a separate non-critical service.
 Phase 2D adds an observation-only animated face using the existing BMO artwork
 as a read-only desktop prototype.
+Phase 2E adds controlled local persistent memory with SQLite and bounded,
+untrusted retrieval context.
+
+## Phase 2E controlled memory path
+
+```text
+user turn
+  -> MemoryService deterministic bounded retrieval
+  -> untrusted_remembered_user_context data block (not system authority)
+  -> ConversationService
+  -> local LLM/provider with the composed allowlisted tool definitions
+  -> CompositeToolExecutor
+     -> RobotToolPolicy -> SafetySupervisor -> RobotController
+     -> MemoryToolExecutor -> MemoryPolicy -> SQLiteMemoryStore
+```
+
+Strong explicit commands such as “remember that I prefer pistachio ice cream”
+take a deterministic high-level memory-intent path before the final language
+round. The write is committed and verified first; the provider-neutral tool
+result is then supplied to the model for its acknowledgement. This prevents a
+model-only conversational claim from being mistaken for persistence. Memory
+status questions receive an explicit empty signal when no active record was
+retrieved, so session history cannot masquerade as durable memory.
+
+`MemoryService` owns the versioned SQLite store and privacy policy. The
+conversation service never contains SQL, and Ollama never knows about SQLite.
+Memory tools can remember or forget only bounded structured records; they do
+not expose paths, SQL, shell commands, reflection, or robot authority. Robot
+actions continue through the existing ToolPolicy → SafetySupervisor →
+RobotController path. Memory is non-critical and never changes BMO identity,
+TTS, face state, or safety state. See [memory.md](memory.md).
 
 ## Active identity boundary
 
@@ -34,7 +66,7 @@ The personality is inspired by BMO, but the robot must not invent fictional
 Adventure Time experiences as real persistent memories. Safety policy and
 deterministic tool results always override personality.
 
-When persistent memory is added, examples should describe this real prototype,
+Persistent memory examples describe this real prototype,
 for example: “Remember that I prefer the original BMO voice,” “Remember that
 Fenrir is my alternate BMO voice,” or “Remember that your name is BMO.” BMO's
 identity must remain available when the memory store is empty or unavailable.
@@ -477,8 +509,11 @@ ESP32 must stop when that lease or the communication heartbeat expires.
 - `jarvis.face.view`: GUI-independent face view protocol.
 - `jarvis.face.tkinter_view`: lazy, resizable, aspect-preserving Tk renderer.
 - `jarvis.face.demo`: explicit face and gallery developer command.
+- `jarvis.memory.models/policy`: provider-neutral bounded records and privacy policy.
+- `jarvis.memory.sqlite_store`: versioned local SQLite persistence (explicit init only).
+- `jarvis.memory.service/retrieval/tools`: non-critical memory orchestration, untrusted context, and allowlisted model tools.
 
 Future modules may add streaming/early STT, safe LLM text streaming, real AEC,
-memory, a separately licensed final BMO face, vision, external integrations,
+a separately licensed final BMO face, vision, external integrations,
 physical robot components, and ESP32 transport. Microphone/STT/TTS testing, the
 simulator, and the face are not hardware safety validation.

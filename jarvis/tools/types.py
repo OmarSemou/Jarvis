@@ -10,6 +10,7 @@ from typing import Mapping, Protocol, runtime_checkable
 
 class ToolParameterType(StrEnum):
     STRING = "string"
+    INTEGER = "integer"
 
 
 @dataclass(frozen=True, slots=True)
